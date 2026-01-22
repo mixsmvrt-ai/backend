@@ -16,7 +16,7 @@ app = FastAPI(title="RiddimBase Studio Backend")
 # Allow local Next.js dev
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://mixsmvrt.netlify.app"],
+    allow_origins=["https://mixsmvrt.vercel.app/"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -497,5 +497,6 @@ def admin_settings_update(settings: AdminSettings):
     global _admin_settings
     _admin_settings = settings
     return {"settings": _admin_settings}
+
 
 
