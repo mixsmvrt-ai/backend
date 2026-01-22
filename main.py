@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 from processing.mixing_pipeline import ai_mix
 from processing.mastering_pipeline import ai_master
-from .health import create_health_router
+from health import create_health_router
 
 app = FastAPI(title="RiddimBase Studio Backend")
 
