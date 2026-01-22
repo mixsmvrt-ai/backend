@@ -1,16 +1,23 @@
-from fastapi import FastAPI, File, UploadFile, Form, Body
+from fastapi import FastAPI, File, UploadFile, Form, Body, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pathlib import Path
 import shutil
 import uuid
+import asyncio
 from datetime import datetime, timedelta
-from typing import Literal
+from typing import Literal, Optional, Any, Dict
 
 from pydantic import BaseModel
 
 from processing.mixing_pipeline import ai_mix
 from processing.mastering_pipeline import ai_master
 from health import create_health_router
+from supabase_client import (
+    create_processing_job,
+    update_processing_job,
+    get_processing_job,
+    SupabaseConfigError,
+)
 
 app = FastAPI(title="RiddimBase Studio Backend")
 
@@ -58,6 +65,170 @@ async def genre_detect(file: UploadFile = File(...)) -> GenrePredictionResponse:
     # uploads don't sit in memory unused.
     await file.read()  # pragma: no cover - placeholder behaviour
     return GenrePredictionResponse(genre="unknown", confidence=0.3)
+
+
+# -------------------------
+# Processing job tracking (Supabase-backed)
+# -------------------------
+
+
+class ProcessRequest(BaseModel):
+    user_id: Optional[str] = None
+    job_type: Literal["mix", "master", "mix_master"] = "mix_master"
+    # Arbitrary JSON metadata about where the input files live
+    # (e.g. Supabase storage paths, S3 URLs, or internal session IDs).
+    input_files: Dict[str, Any]
+
+
+class JobStatusResponse(BaseModel):
+    id: str
+    status: Literal["queued", "processing", "completed", "failed"]
+    progress: int
+    current_stage: Optional[str] = None
+    error_message: Optional[str] = None
+    output_files: Optional[Dict[str, Any]] = None
+
+
+async def _run_processing_job(job_id: str, job_type: str, input_files: Dict[str, Any]) -> None:
+    """Background coroutine that simulates a multi-stage DSP pipeline.
+
+    In production you can replace the simulated stages with real calls to
+    your DSP microservice, passing along the job_id so the DSP can also
+    update Supabase directly if desired.
+    """
+
+    try:
+        # Mark job as processing
+        await update_processing_job(
+            job_id,
+            {
+                "status": "processing",
+                "progress": 5,
+                "current_stage": "starting",
+            },
+        )
+
+        # Example staged updates – replace sleeps with real DSP work.
+        await update_processing_job(
+            job_id,
+            {
+                "progress": 20,
+                "current_stage": "preparing_inputs",
+            },
+        )
+        # await call_dsp_stage(...)
+        await asyncio.sleep(0.1)
+
+        await update_processing_job(
+            job_id,
+            {
+                "progress": 50,
+                "current_stage": f"running_{job_type}_pipeline",
+            },
+        )
+        # await call_dsp_stage(...)
+        await asyncio.sleep(0.1)
+
+        await update_processing_job(
+            job_id,
+            {
+                "progress": 80,
+                "current_stage": "finalizing_outputs",
+            },
+        )
+        # await call_dsp_stage(...)
+        await asyncio.sleep(0.1)
+
+        # In a real system, output_files would come from the DSP
+        output_files: Dict[str, Any] = {
+            "master_url": input_files.get("target_path", ""),
+        }
+
+        await update_processing_job(
+            job_id,
+            {
+                "status": "completed",
+                "progress": 100,
+                "current_stage": "done",
+                "output_files": output_files,
+            },
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        # Best-effort failure update so the job is not stuck forever.
+        message = str(exc)
+        try:
+            await update_processing_job(
+                job_id,
+                {
+                    "status": "failed",
+                    "current_stage": "error",
+                    "error_message": message,
+                },
+            )
+        except Exception:
+            # If we cannot even update Supabase, just swallow – there's
+            # nowhere else to report this in a background task.
+            pass
+
+
+@app.post("/process", response_model=JobStatusResponse)
+async def create_process_job(payload: ProcessRequest) -> JobStatusResponse:
+    """Create a new processing job and start background DSP work.
+
+    The endpoint returns immediately with the job id so the frontend can
+    start polling /status/{job_id} for progress updates.
+    """
+
+    try:
+        job_row = await create_processing_job(
+            {
+                "user_id": payload.user_id,
+                "job_type": payload.job_type,
+                "status": "queued",
+                "progress": 0,
+                "current_stage": "queued",
+                "input_files": payload.input_files,
+            }
+        )
+    except SupabaseConfigError as cfg_err:
+        raise HTTPException(status_code=500, detail=str(cfg_err)) from cfg_err
+
+    job_id = str(job_row["id"])
+
+    # Fire-and-forget background coroutine – this process should run with
+    # WEB_CONCURRENCY=1 or otherwise ensure that jobs are not duplicated.
+    asyncio.create_task(_run_processing_job(job_id, payload.job_type, payload.input_files))
+
+    return JobStatusResponse(
+        id=job_id,
+        status=job_row.get("status", "queued"),
+        progress=job_row.get("progress", 0),
+        current_stage=job_row.get("current_stage"),
+        error_message=job_row.get("error_message"),
+        output_files=job_row.get("output_files"),
+    )
+
+
+@app.get("/status/{job_id}", response_model=JobStatusResponse)
+async def get_job_status(job_id: str) -> JobStatusResponse:
+    """Return the current state of a processing job by id."""
+
+    try:
+        job_row = await get_processing_job(job_id)
+    except SupabaseConfigError as cfg_err:
+        raise HTTPException(status_code=500, detail=str(cfg_err)) from cfg_err
+
+    if not job_row:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    return JobStatusResponse(
+        id=str(job_row["id"]),
+        status=job_row.get("status", "queued"),
+        progress=job_row.get("progress", 0),
+        current_stage=job_row.get("current_stage"),
+        error_message=job_row.get("error_message"),
+        output_files=job_row.get("output_files"),
+    )
 
 
 @app.post("/api/mix-master")
