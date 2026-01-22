@@ -171,6 +171,111 @@ async def _run_processing_job(job_id: str, job_type: str, input_files: Dict[str,
             pass
 
 
+async def _run_mix_master_job(
+    job_id: str,
+    session_id: str,
+    session_dir: Path,
+    beat_path: Path | None,
+    lead_path: Path | None,
+    adlibs_path: Path | None,
+    genre: str,
+    target_lufs: str,
+) -> None:
+    """Background job that runs the real mix+master pipeline.
+
+    This mirrors the previous synchronous /api/mix-master behaviour but
+    reports progress into Supabase as it goes.
+    """
+
+    try:
+        await update_processing_job(
+            job_id,
+            {
+                "status": "processing",
+                "progress": 5,
+                "current_stage": "saving_inputs",
+            },
+        )
+
+        loop = asyncio.get_running_loop()
+
+        mixed_path = session_dir / "mix.wav"
+        master_path = session_dir / "master.wav"
+
+        # For now, the mixing pipeline expects a vocal + beat path. If only one
+        # track exists, treat it as a full mix and only run mastering.
+        if beat_path and (lead_path or adlibs_path):
+            await update_processing_job(
+                job_id,
+                {
+                    "progress": 25,
+                    "current_stage": "mixing_stems",
+                },
+            )
+            vocal_source = lead_path or adlibs_path
+            await loop.run_in_executor(
+                None,
+                ai_mix,
+                str(vocal_source),
+                str(beat_path),
+                str(mixed_path),
+            )
+            mix_for_master: Path | None = mixed_path
+        else:
+            # Single-file workflow: use whichever upload is present.
+            first_available = beat_path or lead_path or adlibs_path
+            mix_for_master = first_available
+
+        if mix_for_master is None:
+            raise RuntimeError("No valid audio file found for mastering")
+
+        await update_processing_job(
+            job_id,
+            {
+                "progress": 60,
+                "current_stage": "mastering_mix",
+            },
+        )
+
+        await loop.run_in_executor(
+            None,
+            ai_master,
+            str(mix_for_master),
+            str(master_path),
+            target_lufs,
+        )
+
+        output_files: Dict[str, Any] = {
+            "session_id": session_id,
+            "master_path": str(master_path),
+            "genre": genre,
+            "target_lufs": target_lufs,
+        }
+
+        await update_processing_job(
+            job_id,
+            {
+                "status": "completed",
+                "progress": 100,
+                "current_stage": "done",
+                "output_files": output_files,
+            },
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        message = str(exc)
+        try:
+            await update_processing_job(
+                job_id,
+                {
+                    "status": "failed",
+                    "current_stage": "error",
+                    "error_message": message,
+                },
+            )
+        except Exception:
+            pass
+
+
 @app.post("/process", response_model=JobStatusResponse)
 async def create_process_job(payload: ProcessRequest) -> JobStatusResponse:
     """Create a new processing job and start background DSP work.
@@ -239,11 +344,11 @@ async def mix_master(
     genre: str = Form(""),
     target_lufs: str = Form("-14"),
 ):
-    """Accept audio files and run the AI mix + master chain.
+    """Accept audio files and enqueue an AI mix + master job.
 
-    This endpoint is intentionally simple: it stores files in a unique
-    session folder, runs your existing ffmpeg-based pipelines, and returns
-    the path to the rendered master file.
+    Files are stored in a unique session folder and a processing_jobs row
+    is created in Supabase. The actual DSP work then runs in the
+    background, and clients should poll /status/{job_id} for progress.
     """
 
     if beat is None and lead is None and adlibs is None:
@@ -257,29 +362,52 @@ async def mix_master(
     lead_path = _save_upload(lead, session_dir / "lead.wav") if lead else None
     adlibs_path = _save_upload(adlibs, session_dir / "adlibs.wav") if adlibs else None
 
-    # For now, the mixing pipeline expects a vocal + beat path. If only one
-    # track exists, treat it as a full mix and only run mastering.
-    mixed_path = session_dir / "mix.wav"
-    master_path = session_dir / "master.wav"
+    # Persist a queued job in Supabase so the frontend can track it.
+    input_files: Dict[str, Any] = {
+        "session_id": session_id,
+        "session_dir": str(session_dir),
+        "beat_path": str(beat_path) if beat_path else None,
+        "lead_path": str(lead_path) if lead_path else None,
+        "adlibs_path": str(adlibs_path) if adlibs_path else None,
+        "genre": genre,
+        "target_lufs": target_lufs,
+    }
 
-    if beat_path and (lead_path or adlibs_path):
-        # Prefer lead vocal; if only adlibs are present, treat them as the vocal stem.
-        vocal_source = lead_path or adlibs_path
-        ai_mix(str(vocal_source), str(beat_path), str(mixed_path))
-        mix_for_master = mixed_path
-    else:
-        # Single-file workflow: use whichever upload is present.
-        first_available = beat_path or lead_path or adlibs_path
-        mix_for_master = first_available
+    try:
+        job_row = await create_processing_job(
+            {
+                "user_id": None,  # Optionally wire through the authenticated user later
+                "job_type": "mix_master",
+                "status": "queued",
+                "progress": 0,
+                "current_stage": "queued",
+                "input_files": input_files,
+            }
+        )
+    except SupabaseConfigError as cfg_err:
+        raise HTTPException(status_code=500, detail=str(cfg_err)) from cfg_err
 
-    ai_master(str(mix_for_master), str(master_path), target_lufs=target_lufs)
+    job_id = str(job_row["id"])
+
+    asyncio.create_task(
+        _run_mix_master_job(
+            job_id,
+            session_id,
+            session_dir,
+            beat_path,
+            lead_path,
+            adlibs_path,
+            genre,
+            target_lufs,
+        )
+    )
 
     return {
-        "status": "ok",
+        "status": "queued",
+        "job_id": job_id,
         "session_id": session_id,
         "genre": genre,
         "target_lufs": target_lufs,
-        "master_path": str(master_path),
     }
 
 
