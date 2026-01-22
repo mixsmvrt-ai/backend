@@ -10,17 +10,22 @@ from pydantic import BaseModel
 
 from processing.mixing_pipeline import ai_mix
 from processing.mastering_pipeline import ai_master
+from .health import create_health_router
 
 app = FastAPI(title="RiddimBase Studio Backend")
 
 # Allow local Next.js dev
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://mixsmvrt.vercel.app/"],
+    allow_origins=["http://localhost:3000", "http://localhost:3001", "http://localhost:3002"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Lightweight health + readiness endpoints for uptime monitoring
+health_router = create_health_router(service_name="backend", version="1.0.0")
+app.include_router(health_router)
 
 BASE_DIR = Path(__file__).resolve().parent
 SESSIONS_DIR = BASE_DIR / "sessions"
@@ -497,6 +502,3 @@ def admin_settings_update(settings: AdminSettings):
     global _admin_settings
     _admin_settings = settings
     return {"settings": _admin_settings}
-
-
-
