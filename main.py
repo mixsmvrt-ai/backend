@@ -78,6 +78,7 @@ async def genre_detect(file: UploadFile = File(...)) -> GenrePredictionResponse:
 class ProcessRequest(BaseModel):
     user_id: Optional[str] = None
     job_type: Literal["mix", "master", "mix_master"] = "mix_master"
+    preset_key: Optional[str] = None
     # Arbitrary JSON metadata about where the input files live
     # (e.g. Supabase storage paths, S3 URLs, or internal session IDs).
     input_files: Dict[str, Any]
@@ -177,6 +178,25 @@ async def _run_processing_job(job_id: str, job_type: str, input_files: Dict[str,
                 "output_files": output_files,
             },
         )
+
+        # Best-effort preset usage tracking once the job has completed.
+        try:
+            job_row = await get_processing_job(job_id)
+            if job_row is not None:
+                preset_key = job_row.get("preset_key")
+                user_id = job_row.get("user_id")
+                if preset_key:
+                    await supabase_insert(
+                        "preset_usage",
+                        {
+                            "user_id": user_id,
+                            "job_id": job_row.get("id"),
+                            "preset_key": preset_key,
+                        },
+                    )
+        except Exception:
+            # Analytics should never break job completion.
+            pass
     except Exception as exc:  # pragma: no cover - defensive
         # Best-effort failure update so the job is not stuck forever.
         message = str(exc)
@@ -285,6 +305,25 @@ async def _run_mix_master_job(
                 "output_files": output_files,
             },
         )
+
+        # Record preset usage for mix/master jobs when a preset_key is set
+        # on the processing_jobs row.
+        try:
+            job_row = await get_processing_job(job_id)
+            if job_row is not None:
+                preset_key = job_row.get("preset_key")
+                user_id = job_row.get("user_id")
+                if preset_key:
+                    await supabase_insert(
+                        "preset_usage",
+                        {
+                            "user_id": user_id,
+                            "job_id": job_row.get("id"),
+                            "preset_key": preset_key,
+                        },
+                    )
+        except Exception:
+            pass
     except Exception as exc:  # pragma: no cover - defensive
         message = str(exc)
         try:
@@ -313,6 +352,7 @@ async def create_process_job(payload: ProcessRequest) -> JobStatusResponse:
             {
                 "user_id": payload.user_id,
                 "job_type": payload.job_type,
+                "preset_key": payload.preset_key,
                 "status": "queued",
                 "progress": 0,
                 "current_stage": "queued",
