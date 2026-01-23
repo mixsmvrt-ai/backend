@@ -4,7 +4,7 @@ from pathlib import Path
 import shutil
 import uuid
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from typing import Literal, Optional, Any, Dict
 
 from pydantic import BaseModel
@@ -16,6 +16,8 @@ from supabase_client import (
     create_processing_job,
     update_processing_job,
     get_processing_job,
+    supabase_select,
+    supabase_patch,
     SupabaseConfigError,
 )
 
@@ -554,53 +556,203 @@ def _demo_datetime_series(days: int, field: str) -> list[dict[str, int | float |
     return series
 
 
+def _parse_iso_datetime(value: str) -> datetime | None:
+    """Best-effort parser for ISO timestamps coming back from Supabase.
+
+    Handles optional trailing 'Z' and returns None if parsing fails.
+    """
+
+    if not value:
+        return None
+    try:
+        cleaned = value.rstrip("Z")
+        return datetime.fromisoformat(cleaned)
+    except Exception:
+        return None
+
+
 # -------------------------
 # Admin API routes
 # -------------------------
 
 
 @app.get("/admin/dashboard")
-def admin_dashboard():
+async def admin_dashboard():
+    """Admin overview powered by live Supabase data."""
+
+    try:
+        # Fetch core datasets; for early-stage volumes it's fine to compute
+        # aggregates in Python instead of specialised SQL.
+        users = await supabase_select("user_profiles")
+        jobs = await supabase_select("processing_jobs")
+        payments = await supabase_select("billing_payments")
+        preset_usage = await supabase_select("preset_usage")
+    except SupabaseConfigError as cfg_err:
+        raise HTTPException(status_code=500, detail=str(cfg_err)) from cfg_err
+
+    today = datetime.utcnow().date()
+    month_start = today.replace(day=1)
+
+    total_users = len(users)
+    active_jobs = len([j for j in jobs if j.get("status") in {"queued", "processing"}])
+
+    jobs_today = 0
+    failed_jobs = 0
+    durations: list[float] = []
+
+    # Derive job stats and a 14-day timeseries
+    window_start = today - timedelta(days=13)
+    jobs_per_day: dict[date, int] = {
+        window_start + timedelta(days=i): 0 for i in range(14)
+    }
+
+    for job in jobs:
+        status = job.get("status") or "queued"
+        if status == "failed":
+            failed_jobs += 1
+
+        created_raw = job.get("created_at")
+        created_dt = _parse_iso_datetime(created_raw) if isinstance(created_raw, str) else None
+        if created_dt is not None:
+            created_date = created_dt.date()
+            if created_date == today:
+                jobs_today += 1
+            if window_start <= created_date <= today:
+                jobs_per_day[created_date] = jobs_per_day.get(created_date, 0) + 1
+
+        duration_val = job.get("duration_sec")
+        if isinstance(duration_val, (int, float)) and duration_val > 0:
+            durations.append(float(duration_val))
+
+    avg_processing_time = float(sum(durations) / len(durations)) if durations else 0.0
+
+    # Revenue (in cents) derived from successful payments
+    revenue_today_cents = 0
+    revenue_month_cents = 0
+
+    for payment in payments:
+        status = (payment.get("status") or "").lower()
+        if status not in {"succeeded", "completed"}:
+            continue
+
+        created_raw = payment.get("created_at")
+        created_dt = _parse_iso_datetime(created_raw) if isinstance(created_raw, str) else None
+        if created_dt is None:
+            continue
+
+        created_date = created_dt.date()
+        amount_cents = int(payment.get("amount_cents") or 0)
+
+        if created_date == today:
+            revenue_today_cents += amount_cents
+        if created_date >= month_start:
+            revenue_month_cents += amount_cents
+
     stats = DashboardStats(
-        total_users=1280,
-        active_jobs=7,
-        jobs_today=96,
-        failed_jobs=3,
-        revenue_today=420.5,
-        revenue_month=8920.75,
-        avg_processing_time=34.2,
+        total_users=total_users,
+        active_jobs=active_jobs,
+        jobs_today=jobs_today,
+        failed_jobs=failed_jobs,
+        revenue_today=revenue_today_cents / 100.0,
+        revenue_month=revenue_month_cents / 100.0,
+        avg_processing_time=avg_processing_time,
     )
-    top_presets = [
-        TopPreset(id="clean_vocal", name="Clean Vocal", uses=540),
-        TopPreset(id="bg_vocal_glue", name="BG Vocal Glue", uses=312),
-        TopPreset(id="streaming_master", name="Streaming Master", uses=287),
+
+    # Top presets over all time, based on preset_usage events
+    top_presets: list[TopPreset] = []
+    if preset_usage:
+        usage_counts: dict[str, int] = {}
+        for row in preset_usage:
+            key = str(row.get("preset_key") or "unknown")
+            usage_counts[key] = usage_counts.get(key, 0) + 1
+
+        sorted_presets = sorted(
+            usage_counts.items(), key=lambda kv: kv[1], reverse=True
+        )[:5]
+
+        for key, uses in sorted_presets:
+            top_presets.append(TopPreset(id=key, name=key, uses=uses))
+
+    jobs_timeseries = [
+        JobsTimeseriesPoint(date=day.isoformat(), jobs=jobs_per_day.get(day, 0))
+        for day in sorted(jobs_per_day.keys())
     ]
-    jobs_timeseries = [JobsTimeseriesPoint(**p) for p in _demo_datetime_series(14, "jobs")]
-    return {"stats": stats, "top_presets": top_presets, "jobs_timeseries": jobs_timeseries}
+
+    return {
+        "stats": stats,
+        "top_presets": top_presets,
+        "jobs_timeseries": jobs_timeseries,
+    }
 
 
 @app.get("/admin/users")
-def admin_users_list():
-    users = [
-        AdminUser(id="user-demo-1", email="artist@example.com", plan="Pro", country="JM"),
-        AdminUser(id="user-demo-2", email="engineer@example.com", plan="Studio", country="US"),
-        AdminUser(id="user-demo-3", email="tester@example.com", plan=None, country=None, status="suspended"),
-    ]
+async def admin_users_list():
+    """List users from Supabase user_profiles with plan info."""
+
+    try:
+        profiles = await supabase_select("user_profiles")
+        plans = await supabase_select("billing_plans")
+    except SupabaseConfigError as cfg_err:
+        raise HTTPException(status_code=500, detail=str(cfg_err)) from cfg_err
+
+    plan_by_id = {str(p.get("id")): p.get("name") for p in plans}
+
+    users: list[AdminUser] = []
+    for row in profiles:
+        user_id = str(row.get("user_id"))
+        email = row.get("email") or ""
+        country = row.get("country")
+        status_raw = row.get("status") or "active"
+        plan_id = row.get("plan_id")
+        plan_name = plan_by_id.get(str(plan_id)) if plan_id is not None else None
+
+        users.append(
+            AdminUser(
+                id=user_id,
+                email=email,
+                plan=plan_name,
+                country=country,
+                status=status_raw,  # constrained by DB check
+            )
+        )
+
     return {"users": users}
 
 
 @app.get("/admin/users/{user_id}")
-def admin_user_detail(user_id: str):
-    # In a real app this would query Supabase/Postgres; for now return a demo user.
+async def admin_user_detail(user_id: str):
+    """Detailed view of a single user with job count and credits."""
+
+    try:
+        profiles = await supabase_select(
+            "user_profiles", {"user_id": f"eq.{user_id}", "limit": 1}
+        )
+        if not profiles:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        profile = profiles[0]
+        plans = await supabase_select("billing_plans")
+        jobs = await supabase_select("processing_jobs", {"user_id": f"eq.{user_id}"})
+    except SupabaseConfigError as cfg_err:
+        raise HTTPException(status_code=500, detail=str(cfg_err)) from cfg_err
+
+    plan_by_id = {str(p.get("id")): p for p in plans}
+    plan_id = profile.get("plan_id")
+    plan = plan_by_id.get(str(plan_id)) if plan_id is not None else None
+
+    plan_name = plan.get("name") if plan else None
+    credits = int(plan.get("credits") or 0) if plan else 0
+
     user = AdminUserDetail(
-        id=user_id,
-        email="artist@example.com",
-        plan="Pro",
-        country="JM",
-        status="active",
-        credits=120,
-        jobs_count=48,
+        id=str(profile.get("user_id")),
+        email=profile.get("email") or "",
+        plan=plan_name,
+        country=profile.get("country"),
+        status=profile.get("status") or "active",
+        credits=credits,
+        jobs_count=len(jobs),
     )
+
     return {"user": user}
 
 
@@ -609,8 +761,21 @@ class UpdateUserStatusPayload(BaseModel):
 
 
 @app.post("/admin/users/{user_id}/status")
-def admin_update_user_status(user_id: str, payload: UpdateUserStatusPayload):
-    # No-op demo: accept the change and echo it back.
+async def admin_update_user_status(user_id: str, payload: UpdateUserStatusPayload):
+    """Update a user's status field in user_profiles."""
+
+    try:
+        updated = await supabase_patch(
+            "user_profiles",
+            {"user_id": f"eq.{user_id}"},
+            {"status": payload.status},
+        )
+    except SupabaseConfigError as cfg_err:
+        raise HTTPException(status_code=500, detail=str(cfg_err)) from cfg_err
+
+    if not updated:
+        raise HTTPException(status_code=404, detail="User not found")
+
     return {"user_id": user_id, "status": payload.status}
 
 
@@ -620,59 +785,124 @@ class UpdateUserCreditsPayload(BaseModel):
 
 @app.post("/admin/users/{user_id}/credits")
 def admin_update_user_credits(user_id: str, payload: UpdateUserCreditsPayload):
-    # No-op demo: pretend credits were updated.
+    """Placeholder: accept credit adjustments without persisting them.
+
+    The current schema does not track per-user credit balances beyond the
+    plan-level credit allowance. This endpoint simply echoes the request so
+    the admin UI remains functional without requiring additional schema
+    changes.
+    """
+
     return {"user_id": user_id, "delta": payload.delta}
 
 
 @app.get("/admin/jobs")
-def admin_jobs_list():
-    jobs = [
-        AdminJob(
-            id="job-demo-1",
-            user_email="artist@example.com",
-            status="completed",
-            input_type="stems",
-            preset="streaming_master",
-            duration_sec=185.3,
-        ),
-        AdminJob(
-            id="job-demo-2",
-            user_email="tester@example.com",
-            status="failed",
-            input_type="single",
-            preset="clean_vocal",
-            duration_sec=92.1,
-        ),
-    ]
+async def admin_jobs_list():
+    """List recent processing jobs with user email and status mapping."""
+
+    try:
+        jobs_rows = await supabase_select(
+            "processing_jobs",
+            {"order": "created_at.desc", "limit": 200},
+        )
+        profiles = await supabase_select("user_profiles")
+    except SupabaseConfigError as cfg_err:
+        raise HTTPException(status_code=500, detail=str(cfg_err)) from cfg_err
+
+    email_by_user_id = {str(p.get("user_id")): p.get("email") for p in profiles}
+
+    jobs: list[AdminJob] = []
+    for row in jobs_rows:
+        raw_status = (row.get("status") or "queued").lower()
+        if raw_status in {"queued", "processing"}:
+            status: Literal["active", "completed", "failed"] = "active"
+        elif raw_status == "completed":
+            status = "completed"
+        else:
+            status = "failed"
+
+        input_type_val = row.get("input_type") or "single"
+        preset_val = row.get("preset_key")
+        duration_val = row.get("duration_sec") or 0
+
+        user_id = row.get("user_id")
+        user_email = email_by_user_id.get(str(user_id), "anonymous")
+
+        jobs.append(
+            AdminJob(
+                id=str(row.get("id")),
+                user_email=user_email or "anonymous",
+                status=status,
+                input_type=input_type_val,
+                preset=preset_val,
+                duration_sec=float(duration_val),
+            )
+        )
+
     return {"jobs": jobs}
 
 
 @app.get("/admin/jobs/{job_id}")
-def admin_job_detail(job_id: str):
-    now = datetime.utcnow().isoformat() + "Z"
+async def admin_job_detail(job_id: str):
+    """Detailed view of a single processing job from Supabase."""
+
+    try:
+        rows = await supabase_select(
+            "processing_jobs", {"id": f"eq.{job_id}", "limit": 1}
+        )
+        if not rows:
+            raise HTTPException(status_code=404, detail="Job not found")
+
+        job_row = rows[0]
+        profiles = await supabase_select("user_profiles")
+    except SupabaseConfigError as cfg_err:
+        raise HTTPException(status_code=500, detail=str(cfg_err)) from cfg_err
+
+    email_by_user_id = {str(p.get("user_id")): p.get("email") for p in profiles}
+
+    raw_status = (job_row.get("status") or "queued").lower()
+    if raw_status in {"queued", "processing"}:
+        status: Literal["active", "completed", "failed"] = "active"
+    elif raw_status == "completed":
+        status = "completed"
+    else:
+        status = "failed"
+
+    input_type_val = job_row.get("input_type") or "single"
+    preset_val = job_row.get("preset_key")
+    duration_val = float(job_row.get("duration_sec") or 0)
+
+    created_raw = job_row.get("created_at")
+    created_iso = str(created_raw) if created_raw is not None else datetime.utcnow().isoformat() + "Z"
+
+    user_id = job_row.get("user_id")
+    user_email = email_by_user_id.get(str(user_id), "anonymous") or "anonymous"
+
+    input_files = job_row.get("input_files") or {}
+    output_files = job_row.get("output_files") or {}
+
+    # Provide some generic step labels so the admin UI timeline stays useful
+    job_type = job_row.get("job_type") or "mix_master"
+    steps: list[str] = ["Upload received"]
+    if job_type in {"mix", "mix_master"}:
+        steps.append("Mixing")
+    if job_type in {"master", "mix_master"}:
+        steps.append("Mastering")
+
     job = AdminJobDetail(
-        id=job_id,
-        user_email="artist@example.com",
-        status="completed",
-        input_type="stems",
-        preset="streaming_master",
-        duration_sec=185.3,
-        created_at=now,
-        steps=[
-            "Upload received",
-            "Vocal/beat alignment",
-            "AI mix chain",
-            "Mastering chain",
-        ],
-        input_url=None,
-        output_url=None,
-        logs=[
-            "[info] job started",
-            "[info] running vocal chain",
-            "[info] applying streaming master preset",
-            "[info] job finished",
-        ],
+        id=str(job_row.get("id")),
+        user_email=user_email,
+        status=status,
+        input_type=input_type_val,
+        preset=preset_val,
+        duration_sec=duration_val,
+        created_at=created_iso,
+        steps=steps,
+        input_url=input_files.get("session_dir"),
+        output_url=output_files.get("master_path"),
+        logs=None,
     )
+
     return {"job": job}
 
 
@@ -699,37 +929,90 @@ def admin_update_preset(preset_id: str, payload: PresetParams = Body(...)):
 
 
 @app.get("/admin/plans")
-def admin_plans_list():
-    plans = [
-        AdminPlan(id="free", name="Free", price_month=0.0, credits=20, stem_limit=2),
-        AdminPlan(id="pro", name="Pro", price_month=19.0, credits=200, stem_limit=8),
-        AdminPlan(id="studio", name="Studio", price_month=49.0, credits=800, stem_limit=None),
-    ]
+async def admin_plans_list():
+    """Expose billing_plans as AdminPlan objects for the admin UI."""
+
+    try:
+        rows = await supabase_select("billing_plans")
+    except SupabaseConfigError as cfg_err:
+        raise HTTPException(status_code=500, detail=str(cfg_err)) from cfg_err
+
+    plans: list[AdminPlan] = []
+    for row in rows:
+        plans.append(
+            AdminPlan(
+                id=str(row.get("id")),
+                name=row.get("name") or "Unnamed plan",
+                price_month=float(row.get("price_month") or 0.0),
+                credits=int(row.get("credits") or 0),
+                stem_limit=row.get("stem_limit"),
+            )
+        )
+
     return {"plans": plans}
 
 
 @app.get("/admin/payments")
-def admin_payments_list():
-    now = datetime.utcnow()
-    payments = [
-        AdminPayment(
-            id="pay-demo-1",
-            user_email="artist@example.com",
-            amount=19.0,
-            provider="stripe",
-            status="succeeded",
-            created_at=(now - timedelta(days=1)).isoformat() + "Z",
-        ),
-        AdminPayment(
-            id="pay-demo-2",
-            user_email="studio@example.com",
-            amount=49.0,
-            provider="stripe",
-            status="succeeded",
-            created_at=(now - timedelta(days=3)).isoformat() + "Z",
-        ),
+async def admin_payments_list():
+    """List payments from billing_payments and build a 30-day revenue series."""
+
+    try:
+        payments_rows = await supabase_select(
+            "billing_payments", {"order": "created_at.desc", "limit": 200}
+        )
+        profiles = await supabase_select("user_profiles")
+    except SupabaseConfigError as cfg_err:
+        raise HTTPException(status_code=500, detail=str(cfg_err)) from cfg_err
+
+    email_by_user_id = {str(p.get("user_id")): p.get("email") for p in profiles}
+
+    payments: list[AdminPayment] = []
+    for row in payments_rows:
+        user_id = row.get("user_id")
+        user_email = email_by_user_id.get(str(user_id), "unknown") or "unknown"
+
+        amount_cents = int(row.get("amount_cents") or 0)
+        created_raw = row.get("created_at")
+        created_iso = str(created_raw) if created_raw is not None else datetime.utcnow().isoformat() + "Z"
+
+        payments.append(
+            AdminPayment(
+                id=str(row.get("id")),
+                user_email=user_email,
+                amount=amount_cents / 100.0,
+                provider=row.get("provider") or "unknown",
+                status=row.get("status") or "pending",
+                created_at=created_iso,
+            )
+        )
+
+    # Build a simple 30-day revenue timeseries from successful payments
+    today = datetime.utcnow().date()
+    window_start = today - timedelta(days=29)
+    revenue_per_day: dict[date, int] = {
+        window_start + timedelta(days=i): 0 for i in range(30)
+    }
+
+    for row in payments_rows:
+        status = (row.get("status") or "").lower()
+        if status not in {"succeeded", "completed"}:
+            continue
+
+        created_raw = row.get("created_at")
+        created_dt = _parse_iso_datetime(created_raw) if isinstance(created_raw, str) else None
+        if created_dt is None:
+            continue
+
+        created_date = created_dt.date()
+        if window_start <= created_date <= today:
+            amount_cents = int(row.get("amount_cents") or 0)
+            revenue_per_day[created_date] = revenue_per_day.get(created_date, 0) + amount_cents
+
+    revenue_series = [
+        RevenuePoint(date=day.isoformat(), amount=revenue_per_day.get(day, 0) / 100.0)
+        for day in sorted(revenue_per_day.keys())
     ]
-    revenue_series = [RevenuePoint(**p) for p in _demo_datetime_series(30, "amount")]
+
     return {"payments": payments, "revenue_timeseries": revenue_series}
 
 

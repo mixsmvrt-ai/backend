@@ -1,5 +1,5 @@
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 
 import httpx
 
@@ -92,3 +92,52 @@ async def get_processing_job(job_id: str) -> Optional[Dict[str, Any]]:
         if not isinstance(data, list) or not data:
             return None
         return data[0]
+
+
+async def supabase_select(table: str, params: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    """Generic helper to select rows from an arbitrary Supabase table.
+
+    This is intentionally thin so admin endpoints can compose their own
+    filters, ordering, and projections using PostgREST query parameters.
+    """
+
+    base_url = _get_base_url()
+    headers = _get_headers()
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.get(
+            f"{base_url}/{table}",
+            headers=headers,
+            params=params or {},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if not isinstance(data, list):
+            raise RuntimeError(f"Unexpected response when selecting from {table}")
+        return data
+
+
+async def supabase_patch(
+    table: str, filters: Dict[str, Any], updates: Dict[str, Any]
+) -> List[Dict[str, Any]]:
+    """Generic helper to patch rows in a Supabase table.
+
+    Returns the list of updated records (may be empty if no rows matched).
+    """
+
+    base_url = _get_base_url()
+    headers = _get_headers()
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.patch(
+            f"{base_url}/{table}",
+            headers={**headers, "Prefer": "return=representation"},
+            params=filters,
+            json=updates,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if not isinstance(data, list):
+            raise RuntimeError(f"Unexpected response when patching {table}")
+        return data
+
