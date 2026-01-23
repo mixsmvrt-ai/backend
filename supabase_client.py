@@ -141,3 +141,24 @@ async def supabase_patch(
             raise RuntimeError(f"Unexpected response when patching {table}")
         return data
 
+
+async def supabase_insert(
+    table: str, payload: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Insert a single row into a Supabase table and return it."""
+
+    base_url = _get_base_url()
+    headers = _get_headers()
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.post(
+            f"{base_url}/{table}",
+            headers={**headers, "Prefer": "return=representation"},
+            json=payload,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if not isinstance(data, list) or not data:
+            raise RuntimeError(f"Unexpected response when inserting into {table}")
+        return data[0]
+

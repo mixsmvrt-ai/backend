@@ -18,6 +18,7 @@ from supabase_client import (
     get_processing_job,
     supabase_select,
     supabase_patch,
+    supabase_insert,
     SupabaseConfigError,
 )
 
@@ -89,6 +90,27 @@ class JobStatusResponse(BaseModel):
     current_stage: Optional[str] = None
     error_message: Optional[str] = None
     output_files: Optional[Dict[str, Any]] = None
+
+
+# -------------------------
+# Billing & plan models
+# -------------------------
+
+
+class CheckoutCapturePayload(BaseModel):
+    user_id: Optional[str] = None
+    plan_key: str
+    amount_cents: int
+    provider: Literal["paypal"] = "paypal"
+    provider_payment_id: Optional[str] = None
+
+
+class CheckoutCaptureResponse(BaseModel):
+    payment_id: str
+    user_id: Optional[str] = None
+    plan_key: str
+    amount_cents: int
+    currency: str = "USD"
 
 
 async def _run_processing_job(job_id: str, job_type: str, input_files: Dict[str, Any]) -> None:
@@ -1196,3 +1218,56 @@ async def admin_settings_update(settings: AdminSettings):
         raise HTTPException(status_code=500, detail=str(cfg_err)) from cfg_err
 
     return {"settings": _admin_settings}
+
+
+# -------------------------
+# Checkout capture endpoint
+# -------------------------
+
+
+@app.post("/billing/capture", response_model=CheckoutCaptureResponse)
+async def billing_capture(payload: CheckoutCapturePayload):
+    """Record a successful billing event in billing_payments.
+
+    The frontend should call this after a PayPal payment is approved and
+    captured. It will:
+    - look up the plan by key
+    - create a billing_payments row
+    - optionally associate the payment with a known user_id
+    """
+
+    plan_key = payload.plan_key
+
+    try:
+        plans = await supabase_select(
+            "billing_plans", {"key": f"eq.{plan_key}", "limit": 1}
+        )
+        if not plans:
+            raise HTTPException(status_code=400, detail="Unknown plan key")
+
+        plan = plans[0]
+        plan_id = plan.get("id")
+
+        payment_row = await supabase_insert(
+            "billing_payments",
+            {
+                "user_id": payload.user_id,
+                "plan_id": plan_id,
+                "job_id": None,
+                "amount_cents": payload.amount_cents,
+                "currency": "USD",
+                "status": "completed",
+                "provider": payload.provider,
+                "provider_payment_id": payload.provider_payment_id,
+            },
+        )
+    except SupabaseConfigError as cfg_err:
+        raise HTTPException(status_code=500, detail=str(cfg_err)) from cfg_err
+
+    return CheckoutCaptureResponse(
+        payment_id=str(payment_row.get("id")),
+        user_id=payload.user_id,
+        plan_key=plan_key,
+        amount_cents=payload.amount_cents,
+        currency="USD",
+    )
