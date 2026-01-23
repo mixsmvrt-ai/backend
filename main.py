@@ -907,24 +907,70 @@ async def admin_job_detail(job_id: str):
 
 
 @app.get("/admin/presets")
-def admin_presets_list():
-    presets = [
-        AdminPreset(id="clean_vocal", name="Clean Vocal", role="vocal", enabled=True, version="1.0.0"),
-        AdminPreset(id="bg_vocal_glue", name="BG Vocal Glue", role="bgv", enabled=True, version="1.0.0"),
-        AdminPreset(id="streaming_master", name="Streaming Master", role="master", enabled=True, version="1.1.0"),
-    ]
+async def admin_presets_list():
+    """List presets from the admin_presets table."""
+
+    try:
+        rows = await supabase_select("admin_presets")
+    except SupabaseConfigError as cfg_err:
+        raise HTTPException(status_code=500, detail=str(cfg_err)) from cfg_err
+
+    presets: list[AdminPreset] = []
+    for row in rows:
+        presets.append(
+            AdminPreset(
+                id=str(row.get("id")),
+                name=row.get("name") or "Unnamed preset",
+                role=row.get("role") or "vocal",
+                enabled=bool(row.get("enabled", True)),
+                version=row.get("version") or "1.0.0",
+            )
+        )
+
     return {"presets": presets}
 
 
 @app.get("/admin/presets/{preset_id}")
-def admin_preset_detail(preset_id: str):
-    params = _preset_params.get(preset_id, PresetParams())
+async def admin_preset_detail(preset_id: str):
+    """Return parameter set for a single preset from admin_presets.params."""
+
+    try:
+        rows = await supabase_select(
+            "admin_presets", {"id": f"eq.{preset_id}", "limit": 1}
+        )
+    except SupabaseConfigError as cfg_err:
+        raise HTTPException(status_code=500, detail=str(cfg_err)) from cfg_err
+
+    if not rows:
+        raise HTTPException(status_code=404, detail="Preset not found")
+
+    row = rows[0]
+    raw_params = row.get("params") or {}
+
+    try:
+        params = PresetParams(**raw_params)
+    except Exception:
+        params = PresetParams()
+
     return {"preset_params": params}
 
 
 @app.post("/admin/presets/{preset_id}")
-def admin_update_preset(preset_id: str, payload: PresetParams = Body(...)):
-    _preset_params[preset_id] = payload
+async def admin_update_preset(preset_id: str, payload: PresetParams = Body(...)):
+    """Update the JSON params for a preset in admin_presets."""
+
+    try:
+        updated = await supabase_patch(
+            "admin_presets",
+            {"id": f"eq.{preset_id}"},
+            {"params": payload.dict()},
+        )
+    except SupabaseConfigError as cfg_err:
+        raise HTTPException(status_code=500, detail=str(cfg_err)) from cfg_err
+
+    if not updated:
+        raise HTTPException(status_code=404, detail="Preset not found")
+
     return {"preset_id": preset_id, "preset_params": payload}
 
 
@@ -1017,70 +1063,136 @@ async def admin_payments_list():
 
 
 @app.get("/admin/storage")
-def admin_storage_stats():
-    stats = StorageStats(total_gb=42.5, avg_per_user_gb=0.5, auto_delete_after_days=30)
+async def admin_storage_stats():
+    """Read aggregate storage stats from storage_stats, or fall back to defaults."""
+
+    try:
+        rows = await supabase_select("storage_stats", {"limit": 1})
+    except SupabaseConfigError as cfg_err:
+        raise HTTPException(status_code=500, detail=str(cfg_err)) from cfg_err
+
+    if not rows:
+        stats = StorageStats(total_gb=0, avg_per_user_gb=0, auto_delete_after_days=30)
+    else:
+        row = rows[0]
+        stats = StorageStats(
+            total_gb=float(row.get("total_gb") or 0),
+            avg_per_user_gb=float(row.get("avg_per_user_gb") or 0),
+            auto_delete_after_days=row.get("auto_delete_after_days"),
+        )
+
     return {"stats": stats}
 
 
 @app.get("/admin/logs")
-def admin_logs_list():
-    now = datetime.utcnow()
-    logs = [
-        AdminLog(
-            id="log-1",
-            level="INFO",
-            source="api",
-            message="healthcheck ok",
-            created_at=now.isoformat() + "Z",
-        ),
-        AdminLog(
-            id="log-2",
-            level="WARN",
-            source="dsp",
-            message="slow processing on job-demo-2",
-            created_at=(now - timedelta(minutes=5)).isoformat() + "Z",
-        ),
-        AdminLog(
-            id="log-3",
-            level="ERROR",
-            source="dsp",
-            message="failed to load pitch correction plugin",
-            created_at=(now - timedelta(minutes=30)).isoformat() + "Z",
-        ),
-    ]
+async def admin_logs_list():
+    """List recent admin logs from the admin_logs table."""
+
+    try:
+        rows = await supabase_select(
+            "admin_logs", {"order": "created_at.desc", "limit": 200}
+        )
+    except SupabaseConfigError as cfg_err:
+        raise HTTPException(status_code=500, detail=str(cfg_err)) from cfg_err
+
+    logs: list[AdminLog] = []
+    for row in rows:
+        created_raw = row.get("created_at")
+        created_iso = (
+            str(created_raw)
+            if created_raw is not None
+            else datetime.utcnow().isoformat() + "Z"
+        )
+        logs.append(
+            AdminLog(
+                id=str(row.get("id")),
+                level=row.get("level") or "INFO",
+                source=row.get("source") or "api",
+                message=row.get("message") or "",
+                created_at=created_iso,
+            )
+        )
+
     return {"logs": logs}
 
 
 @app.get("/admin/content")
-def admin_content_get():
-    testimonials = [
-        Testimonial(id="t1", name="Khalil", role="Artist", quote="Mixes hit like a record label drop."),
-        Testimonial(id="t2", name="Maya", role="Engineer", quote="Cuts my rough-mix time in half."),
-    ]
-    announcements = [
-        Announcement(
-            id="a1",
-            title="New vocal engine",
-            body="We just shipped an upgraded vocal chain tuned for dancehall and afrobeat.",
-            active=True,
-        ),
-        Announcement(
-            id="a2",
-            title="Planned maintenance",
-            body="Short downtime this weekend while we roll out GPU upgrades.",
-            active=False,
-        ),
-    ]
+async def admin_content_get():
+    """Fetch testimonials and announcements from Supabase tables."""
+
+    try:
+        testimonials_rows = await supabase_select("testimonials")
+        announcements_rows = await supabase_select("announcements")
+    except SupabaseConfigError as cfg_err:
+        raise HTTPException(status_code=500, detail=str(cfg_err)) from cfg_err
+
+    testimonials: list[Testimonial] = []
+    for row in testimonials_rows:
+        testimonials.append(
+            Testimonial(
+                id=str(row.get("id")),
+                name=row.get("name") or "",
+                role=row.get("role") or "",
+                quote=row.get("quote") or "",
+            )
+        )
+
+    announcements: list[Announcement] = []
+    for row in announcements_rows:
+        announcements.append(
+            Announcement(
+                id=str(row.get("id")),
+                title=row.get("title") or "",
+                body=row.get("body") or "",
+                active=bool(row.get("active", True)),
+            )
+        )
+
     return {"testimonials": testimonials, "announcements": announcements}
 
 
 @app.get("/admin/settings")
-def admin_settings_get():
-    return {"settings": _admin_settings}
+async def admin_settings_get():
+    """Return admin settings from the admin_settings table (single row)."""
+
+    try:
+        rows = await supabase_select("admin_settings", {"limit": 1})
+    except SupabaseConfigError as cfg_err:
+        raise HTTPException(status_code=500, detail=str(cfg_err)) from cfg_err
+
+    if not rows:
+        return {"settings": _admin_settings}
+
+    row = rows[0]
+    settings = AdminSettings(
+        maintenance_mode=bool(row.get("maintenance_mode", False)),
+        dsp_version=row.get("dsp_version") or "stable",
+        max_concurrent_jobs=int(row.get("max_concurrent_jobs") or 4),
+        max_file_mb=int(row.get("max_file_mb") or 300),
+    )
+
+    return {"settings": settings}
 
 
 @app.post("/admin/settings")
-def admin_settings_update(settings: AdminSettings):
+async def admin_settings_update(settings: AdminSettings):
+    """Persist admin settings to the admin_settings table (id=1)."""
+
     global _admin_settings
     _admin_settings = settings
+
+    try:
+        await supabase_patch(
+            "admin_settings",
+            {"id": "eq.1"},
+            {
+                "maintenance_mode": settings.maintenance_mode,
+                "dsp_version": settings.dsp_version,
+                "max_concurrent_jobs": settings.max_concurrent_jobs,
+                "max_file_mb": settings.max_file_mb,
+            },
+        )
+    except SupabaseConfigError as cfg_err:
+        raise HTTPException(status_code=500, detail=str(cfg_err)) from cfg_err
+
     return {"settings": _admin_settings}
