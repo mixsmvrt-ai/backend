@@ -109,6 +109,11 @@ class JobStatusResponse(BaseModel):
     output_files: Optional[Dict[str, Any]] = None
 
 
+class StepStatus(BaseModel):
+    name: str
+    completed: bool
+
+
 # -------------------------
 # Studio presets registry (for UI + validation)
 # -------------------------
@@ -582,6 +587,62 @@ STUDIO_PRESETS: list[StudioPreset] = [
 ]
 
 
+# High-level DSP step templates per feature type. These describe the
+# conceptual processing flow and are used to drive both backend progress
+# updates and frontend UX.
+FLOW_STEP_TEMPLATES: dict[str, list[str]] = {
+    # Audio cleanup / dialogue repair
+    "audio_cleanup": [
+        "Analyzing audio",
+        "Noise reduction",
+        "Artifact cleanup",
+        "EQ cleanup",
+        "Output rendering",
+    ],
+    # Mixing-only workflows (no mastering limiter)
+    "mixing_only": [
+        "Analyzing audio",
+        "Gain staging",
+        "Applying EQ",
+        "Applying compression",
+        "Adding saturation",
+        "Stereo enhancement",
+        "Mix render",
+    ],
+    # Full mix + master bus flow
+    "mix_master": [
+        "Analyzing audio",
+        "Detecting vocal characteristics",
+        "Cleaning noise & artifacts",
+        "Gain staging",
+        "Applying EQ",
+        "Applying compression",
+        "De-essing",
+        "Adding saturation",
+        "Stereo enhancement",
+        "Bus processing",
+        "Loudness normalization",
+        "Finalizing output",
+    ],
+    # Mastering-only flow
+    "mastering_only": [
+        "Analyzing mix",
+        "Linear EQ",
+        "Multiband compression",
+        "Stereo imaging",
+        "Limiting",
+        "Loudness normalization",
+        "Final render",
+    ],
+}
+
+GENERIC_STEP_TEMPLATE: list[str] = [
+    "Analyzing audio",
+    "Processing",
+    "Finalizing output",
+]
+
+
 def _map_feature_type_to_preset_mode(feature_type: str) -> PresetMode | None:
     """Map a feature_type used for gating to the studio PresetMode.
 
@@ -650,6 +711,63 @@ def _resolve_preset_for_request(
         )
 
     return preset, effective_target
+
+
+def _steps_for_feature_type(feature_type: str | None) -> list[str]:
+    """Return the canonical step list for a given feature type.
+
+    Falls back to a generic template when the feature type is missing or
+    unknown so that progress always advances through a sensible set of
+    stages.
+    """
+
+    if feature_type and feature_type in FLOW_STEP_TEMPLATES:
+        return FLOW_STEP_TEMPLATES[feature_type]
+    return GENERIC_STEP_TEMPLATE
+
+
+def _build_step_statuses(job_row: dict[str, Any]) -> list[StepStatus] | None:
+    """Build per-step completion information for a processing job.
+
+    Steps are discovered from input_files._meta.steps when present and
+    marked completed based on the job's numeric progress. This keeps the
+    contract simple for the frontend while allowing different flows to
+    define their own stage lists.
+    """
+
+    input_files = job_row.get("input_files") or {}
+    if not isinstance(input_files, dict):
+        return None
+
+    meta = input_files.get("_meta") or {}
+    if not isinstance(meta, dict):
+        return None
+
+    raw_steps = meta.get("steps")
+    if not isinstance(raw_steps, list) or not raw_steps:
+        return None
+
+    steps: list[str] = [str(name) for name in raw_steps]
+    progress = int(job_row.get("progress") or 0)
+    status = (job_row.get("status") or "queued").lower()
+
+    total = len(steps)
+    if total == 0:
+        return None
+
+    # Each step completion corresponds to a progress threshold of
+    # (index + 1) / total * 100.
+    thresholds = [int(((index + 1) / total) * 100) for index in range(total)]
+
+    result: list[StepStatus] = []
+    for index, name in enumerate(steps):
+        if status == "failed":
+            completed = progress >= thresholds[index] and False
+        else:
+            completed = progress >= thresholds[index]
+        result.append(StepStatus(name=name, completed=completed))
+
+    return result
 
 
 @app.get("/studio/presets")
@@ -753,61 +871,57 @@ async def _run_processing_job(job_id: str, job_type: str, input_files: Dict[str,
     """
 
     try:
-        # Mark job as processing
-        await update_processing_job(
-            job_id,
-            {
-                "status": "processing",
-                "progress": 5,
-                "current_stage": "starting",
-            },
-        )
+        # Determine the concrete step list for this job from metadata,
+        # falling back to a generic template when necessary.
+        meta = input_files.get("_meta") if isinstance(input_files, dict) else None
+        feature_type = None
+        if isinstance(meta, dict):
+            feature_type = meta.get("feature_type") or meta.get("flow_key")
+        step_names = meta.get("steps") if isinstance(meta, dict) else None
+        if not isinstance(step_names, list) or not step_names:
+            step_names = _steps_for_feature_type(str(feature_type) if feature_type else None)
 
-        # Example staged updates – replace sleeps with real DSP work.
-        await update_processing_job(
-            job_id,
-            {
-                "progress": 20,
-                "current_stage": "preparing_inputs",
-            },
-        )
-        # await call_dsp_stage(...)
-        await asyncio.sleep(0.1)
+        steps: list[str] = [str(name) for name in step_names]
+        total_steps = len(steps) or 1
+        last_stage_name: str | None = None
 
-        await update_processing_job(
-            job_id,
-            {
-                "progress": 50,
-                "current_stage": f"running_{job_type}_pipeline",
-            },
-        )
-        # await call_dsp_stage(...)
-        await asyncio.sleep(0.1)
+        # Execute each conceptual DSP stage; in a production system, replace
+        # the sleeps with real calls into the DSP microservice, one per stage.
+        for index, stage_name in enumerate(steps):
+            last_stage_name = stage_name
+            is_last = index == total_steps - 1
 
-        await update_processing_job(
-            job_id,
-            {
-                "progress": 80,
-                "current_stage": "finalizing_outputs",
-            },
-        )
-        # await call_dsp_stage(...)
-        await asyncio.sleep(0.1)
+            if not is_last:
+                progress = int(((index + 1) / total_steps) * 100)
+                await update_processing_job(
+                    job_id,
+                    {
+                        "status": "processing",
+                        "progress": progress,
+                        "current_stage": stage_name,
+                    },
+                )
+                # await call_dsp_stage(...)
+                await asyncio.sleep(0.1)
+            else:
+                # Final stage: run the last bit of DSP work, then mark the
+                # job complete at 100% with the final stage name.
+                # await call_dsp_stage(...)
+                await asyncio.sleep(0.1)
 
-        # In a real system, output_files would come from the DSP
-        output_files: Dict[str, Any] = {
-            "master_url": input_files.get("target_path", ""),
-        }
+                output_files: Dict[str, Any] = {
+                    "master_url": input_files.get("target_path", ""),
+                }
 
-        await update_processing_job(
-            job_id,
-            {
-                "status": "completed",
-                "progress": 100,
-                "current_stage": "done",
-                "output_files": output_files,
-            },
-        )
+                await update_processing_job(
+                    job_id,
+                    {
+                        "status": "completed",
+                        "progress": 100,
+                        "current_stage": stage_name,
+                        "output_files": output_files,
+                    },
+                )
 
         # Best-effort preset usage tracking once the job has completed.
         try:
@@ -831,11 +945,12 @@ async def _run_processing_job(job_id: str, job_type: str, input_files: Dict[str,
         # Best-effort failure update so the job is not stuck forever.
         message = str(exc)
         try:
+            stage_label = f"Error during {last_stage_name}" if last_stage_name else "error"
             await update_processing_job(
                 job_id,
                 {
                     "status": "failed",
-                    "current_stage": "error",
+                    "current_stage": stage_label,
                     "error_message": message,
                 },
             )
@@ -862,14 +977,17 @@ async def _run_mix_master_job(
     """
 
     try:
+        last_stage_name: str | None = None
+
         await update_processing_job(
             job_id,
             {
                 "status": "processing",
                 "progress": 5,
-                "current_stage": "saving_inputs",
+                "current_stage": "Saving inputs",
             },
         )
+        last_stage_name = "Saving inputs"
 
         loop = asyncio.get_running_loop()
 
@@ -883,9 +1001,10 @@ async def _run_mix_master_job(
                 job_id,
                 {
                     "progress": 25,
-                    "current_stage": "mixing_stems",
+                    "current_stage": "Mixing stems",
                 },
             )
+            last_stage_name = "Mixing stems"
             vocal_source = lead_path or adlibs_path
             await loop.run_in_executor(
                 None,
@@ -907,9 +1026,10 @@ async def _run_mix_master_job(
             job_id,
             {
                 "progress": 60,
-                "current_stage": "mastering_mix",
+                "current_stage": "Mastering mix",
             },
         )
+        last_stage_name = "Mastering mix"
 
         await loop.run_in_executor(
             None,
@@ -931,7 +1051,7 @@ async def _run_mix_master_job(
             {
                 "status": "completed",
                 "progress": 100,
-                "current_stage": "done",
+                "current_stage": "Finalizing output",
                 "output_files": output_files,
             },
         )
@@ -957,11 +1077,12 @@ async def _run_mix_master_job(
     except Exception as exc:  # pragma: no cover - defensive
         message = str(exc)
         try:
+            stage_label = f"Error during {last_stage_name}" if last_stage_name else "error"
             await update_processing_job(
                 job_id,
                 {
                     "status": "failed",
-                    "current_stage": "error",
+                    "current_stage": stage_label,
                     "error_message": message,
                 },
             )
@@ -983,7 +1104,8 @@ async def create_process_job(payload: ProcessRequest) -> JobStatusResponse:
     resolved_preset, effective_target = _resolve_preset_for_request(payload)
 
     # Enrich input_files with lightweight preset metadata so downstream DSP
-    # workers can call the correct chain with the intended target.
+    # workers can call the correct chain with the intended target, and so
+    # progress can be driven by a concrete list of conceptual stages.
     enriched_input_files: Dict[str, Any] = dict(payload.input_files or {})
 
     meta = enriched_input_files.get("_meta")
@@ -1001,6 +1123,14 @@ async def create_process_job(payload: ProcessRequest) -> JobStatusResponse:
         # Target can be inferred from the preset or explicitly supplied
         # by the caller; either way it is persisted for DSP workers.
         meta.setdefault("target", effective_target)
+
+    # Record the high-level feature_type and attach the derived step list so
+    # that the background runner and /status endpoint can expose a
+    # preset-aware stage breakdown for the UI.
+    feature_type_value = payload.feature_type
+    meta.setdefault("feature_type", feature_type_value)
+    meta.setdefault("flow_key", feature_type_value)
+    meta.setdefault("steps", _steps_for_feature_type(feature_type_value))
 
     # For analytics, prefer the canonical studio preset id when available;
     # otherwise fall back to any legacy preset_key passed by callers.
@@ -1031,6 +1161,8 @@ async def create_process_job(payload: ProcessRequest) -> JobStatusResponse:
         _run_processing_job(job_id, payload.job_type, enriched_input_files)
     )
 
+    steps = _build_step_statuses(job_row) or []
+
     return JobStatusResponse(
         id=job_id,
         status=job_row.get("status", "queued"),
@@ -1038,6 +1170,7 @@ async def create_process_job(payload: ProcessRequest) -> JobStatusResponse:
         current_stage=job_row.get("current_stage"),
         error_message=job_row.get("error_message"),
         output_files=job_row.get("output_files"),
+        steps=steps,
     )
 
 
@@ -1053,6 +1186,8 @@ async def get_job_status(job_id: str) -> JobStatusResponse:
     if not job_row:
         raise HTTPException(status_code=404, detail="Job not found")
 
+    steps = _build_step_statuses(job_row) or []
+
     return JobStatusResponse(
         id=str(job_row["id"]),
         status=job_row.get("status", "queued"),
@@ -1060,6 +1195,7 @@ async def get_job_status(job_id: str) -> JobStatusResponse:
         current_stage=job_row.get("current_stage"),
         error_message=job_row.get("error_message"),
         output_files=job_row.get("output_files"),
+        steps=steps,
     )
 
 
@@ -1086,6 +1222,8 @@ async def mix_master(
     adlibs_path = _save_upload(adlibs, session_dir / "adlibs.wav") if adlibs else None
 
     # Persist a queued job in Supabase so the frontend can track it.
+    # Attach a mix+master step list in _meta so the UI can render a
+    # meaningful stage breakdown while the background job runs.
     input_files: Dict[str, Any] = {
         "session_id": session_id,
         "session_dir": str(session_dir),
@@ -1094,6 +1232,11 @@ async def mix_master(
         "adlibs_path": str(adlibs_path) if adlibs_path else None,
         "genre": genre,
         "target_lufs": target_lufs,
+        "_meta": {
+            "feature_type": "mix_master",
+            "flow_key": "mix_master",
+            "steps": _steps_for_feature_type("mix_master"),
+        },
     }
 
     try:
