@@ -79,6 +79,12 @@ class ProcessRequest(BaseModel):
     user_id: Optional[str] = None
     job_type: Literal["mix", "master", "mix_master"] = "mix_master"
     preset_key: Optional[str] = None
+    feature_type: Literal[
+        "audio_cleanup",
+        "mixing_only",
+        "mix_master",
+        "mastering_only",
+    ] = "mix_master"
     # Arbitrary JSON metadata about where the input files live
     # (e.g. Supabase storage paths, S3 URLs, or internal session IDs).
     input_files: Dict[str, Any]
@@ -112,6 +118,62 @@ class CheckoutCaptureResponse(BaseModel):
     plan_key: str
     amount_cents: int
     currency: str = "USD"
+
+
+async def _user_has_feature_access(user_id: str | None, feature_type: str) -> bool:
+    """Return True if the user is allowed to run the requested feature.
+
+    Rules:
+    - Missing user_id => no access (must be authenticated).
+    - user_plans.plan_type == "subscription" with subscription_status in
+      ("active", "trialing") => full access.
+    - Otherwise, check user_credits for a row with matching feature_type and
+      remaining_uses > 0 and (no expiry or expires_at in the future).
+    """
+
+    if not user_id:
+        return False
+
+    try:
+        plans = await supabase_select(
+            "user_plans", {"user_id": f"eq.{user_id}", "limit": 1}
+        )
+    except SupabaseConfigError:
+        # If billing is misconfigured, fail closed for safety.
+        return False
+
+    plan = plans[0] if plans else None
+    plan_type = (plan or {}).get("plan_type") or "free"
+    subscription_status = (plan or {}).get("subscription_status") or None
+
+    if plan_type == "subscription" and subscription_status in {"active", "trialing"}:
+        return True
+
+    # Fallback to pay-as-you-go credits for this feature type.
+    try:
+        credits = await supabase_select(
+            "user_credits",
+            {
+                "user_id": f"eq.{user_id}",
+                "feature_type": f"eq.{feature_type}",
+            },
+        )
+    except SupabaseConfigError:
+        return False
+
+    now = datetime.utcnow()
+    for credit in credits:
+        remaining = int(credit.get("remaining_uses") or 0)
+        if remaining <= 0:
+            continue
+        expires_at_raw = credit.get("expires_at")
+        if isinstance(expires_at_raw, str):
+            expires_dt = _parse_iso_datetime(expires_at_raw)
+            if expires_dt is not None and expires_dt <= now:
+                continue
+        return True
+
+    return False
 
 
 async def _run_processing_job(job_id: str, job_type: str, input_files: Dict[str, Any]) -> None:
@@ -407,17 +469,22 @@ async def mix_master(
     adlibs: UploadFile | None = File(default=None),
     genre: str = Form(""),
     target_lufs: str = Form("-14"),
-):
-    """Accept audio files and enqueue an AI mix + master job.
+    # Enforce feature gating before any heavy processing work is enqueued.
+    has_access = await _user_has_feature_access(payload.user_id, payload.feature_type)
+    if not has_access:
+        raise HTTPException(status_code=403, detail="Feature not available for this account")
 
-    Files are stored in a unique session folder and a processing_jobs row
-    is created in Supabase. The actual DSP work then runs in the
-    background, and clients should poll /status/{job_id} for progress.
-    """
-
-    if beat is None and lead is None and adlibs is None:
-        return {"status": "error", "message": "Upload at least one audio file."}
-
+    try:
+        job_row = await create_processing_job(
+            {
+                "user_id": payload.user_id,
+                "job_type": payload.job_type,
+                "status": "queued",
+                "progress": 0,
+                "current_stage": "queued",
+                "input_files": {**payload.input_files, "feature_type": payload.feature_type},
+            }
+        )
     session_id = uuid.uuid4().hex[:12]
     session_dir = SESSIONS_DIR / session_id
     session_dir.mkdir(parents=True, exist_ok=True)
