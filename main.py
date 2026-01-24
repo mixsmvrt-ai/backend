@@ -24,10 +24,15 @@ from supabase_client import (
 
 app = FastAPI(title="RiddimBase Studio Backend")
 
-# Allow local Next.js dev
+# Allow local Next.js dev and the deployed studio frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:3001", "http://localhost:3002"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://localhost:3001",
+        "http://localhost:3002",
+        "https://mixsmvrt.vercel.app",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -97,6 +102,494 @@ class JobStatusResponse(BaseModel):
     current_stage: Optional[str] = None
     error_message: Optional[str] = None
     output_files: Optional[Dict[str, Any]] = None
+
+
+# -------------------------
+# Studio presets registry (for UI + validation)
+# -------------------------
+
+
+PresetMode = Literal["audio_cleanup", "mixing_only", "mix_and_master", "mastering_only"]
+PresetTarget = Literal["vocal", "beat", "full_mix"]
+
+
+class StudioPreset(BaseModel):
+    id: str
+    name: str
+    mode: PresetMode
+    target: PresetTarget
+    genre: Optional[str] = None
+    description: str
+    dsp_chain_reference: str
+    tags: list[str] = []
+
+
+STUDIO_PRESETS: list[StudioPreset] = [
+    # Audio cleanup
+    StudioPreset(
+        id="podcast_clean",
+        name="Podcast Clean",
+        mode="audio_cleanup",
+        target="vocal",
+        description="Tightens spoken word, removes light noise and focuses intelligibility.",
+        dsp_chain_reference="clean_vocal",
+        tags=["Vocal", "Clean"],
+    ),
+    StudioPreset(
+        id="voice_over_clean",
+        name="Voice Over Clean",
+        mode="audio_cleanup",
+        target="vocal",
+        description="Present, broadcast-style VO with controlled sibilance and proximity.",
+        dsp_chain_reference="clean_vocal",
+        tags=["Vocal", "Clean"],
+    ),
+    StudioPreset(
+        id="noisy_room_cleanup",
+        name="Noisy Room Cleanup",
+        mode="audio_cleanup",
+        target="vocal",
+        description="Reduces constant background noise while keeping the voice natural.",
+        dsp_chain_reference="clean_vocal",
+        tags=["Vocal", "Noise"],
+    ),
+    StudioPreset(
+        id="phone_recording_repair",
+        name="Phone Recording Repair",
+        mode="audio_cleanup",
+        target="vocal",
+        description="Evens out harsh phone captures and restores body to the voice.",
+        dsp_chain_reference="clean_vocal",
+        tags=["Vocal", "Fix"],
+    ),
+    StudioPreset(
+        id="low_end_rumble_removal",
+        name="Low-End Rumble Removal",
+        mode="audio_cleanup",
+        target="vocal",
+        description="Aggressive high-pass and clean-up for HVAC, traffic and mic bumps.",
+        dsp_chain_reference="clean_vocal",
+        tags=["Vocal", "Clean"],
+    ),
+    StudioPreset(
+        id="harshness_reduction",
+        name="Harshness Reduction",
+        mode="audio_cleanup",
+        target="vocal",
+        description="Tames edgy upper-mids on shouty or fatiguing recordings.",
+        dsp_chain_reference="clean_vocal",
+        tags=["Vocal", "Smooth"],
+    ),
+    StudioPreset(
+        id="de_ess_cleanup",
+        name="De-Ess Focused Cleanup",
+        mode="audio_cleanup",
+        target="vocal",
+        description="Targets sibilance and breaths without over-compressing the signal.",
+        dsp_chain_reference="clean_vocal",
+        tags=["Vocal", "De-Ess"],
+    ),
+    StudioPreset(
+        id="dialogue_clarity_boost",
+        name="Dialogue Clarity Boost",
+        mode="audio_cleanup",
+        target="vocal",
+        description="Lifts presence and intelligibility for interviews and dialogue.",
+        dsp_chain_reference="clean_vocal",
+        tags=["Vocal", "Clarity"],
+    ),
+    StudioPreset(
+        id="room_echo_reduction",
+        name="Room Echo Reduction",
+        mode="audio_cleanup",
+        target="vocal",
+        description="Softens small-room reflections and flutter echo.",
+        dsp_chain_reference="clean_vocal",
+        tags=["Vocal", "Room"],
+    ),
+    StudioPreset(
+        id="gentle_noise_reduction",
+        name="Gentle Noise Reduction",
+        mode="audio_cleanup",
+        target="vocal",
+        description="Light broadband cleanup that avoids pumping and artifacts.",
+        dsp_chain_reference="clean_vocal",
+        tags=["Vocal", "Subtle"],
+    ),
+
+    # Mixing only – vocals
+    StudioPreset(
+        id="hip_hop_vocal_pro",
+        name="Hip Hop Vocal Pro",
+        mode="mixing_only",
+        target="vocal",
+        genre="hiphop",
+        description="Forward, polished hip-hop vocal designed to sit on top of the beat.",
+        dsp_chain_reference="aggressive_rap",
+        tags=["Vocal", "Rap", "Loud"],
+    ),
+    StudioPreset(
+        id="trap_vocal_modern",
+        name="Trap Vocal Modern",
+        mode="mixing_only",
+        target="vocal",
+        genre="trap_dancehall",
+        description="Autotune-friendly modern trap vocal with airy top and tight lows.",
+        dsp_chain_reference="aggressive_rap",
+        tags=["Vocal", "Trap"],
+    ),
+    StudioPreset(
+        id="dancehall_vocal_punchy",
+        name="Dancehall Vocal Punchy",
+        mode="mixing_only",
+        target="vocal",
+        genre="dancehall",
+        description="Punchy, bright dancehall vocal tuned for club systems.",
+        dsp_chain_reference="dancehall",
+        tags=["Vocal", "Dancehall"],
+    ),
+    StudioPreset(
+        id="reggae_vocal_natural",
+        name="Reggae Vocal Natural",
+        mode="mixing_only",
+        target="vocal",
+        genre="reggae",
+        description="Warm, rounded reggae vocal with moderate dynamics control.",
+        dsp_chain_reference="reggae",
+        tags=["Vocal", "Reggae", "Warm"],
+    ),
+    StudioPreset(
+        id="rnb_vocal_smooth",
+        name="R&B Vocal Smooth",
+        mode="mixing_only",
+        target="vocal",
+        genre="rnb",
+        description="Silky R&B vocal with softened edges and subtle width.",
+        dsp_chain_reference="rnb",
+        tags=["Vocal", "R&B", "Smooth"],
+    ),
+    StudioPreset(
+        id="afrobeat_vocal_bright",
+        name="Afrobeat Vocal Bright",
+        mode="mixing_only",
+        target="vocal",
+        genre="afrobeat",
+        description="Present afrobeat vocal chain with crisp top and controlled lows.",
+        dsp_chain_reference="afrobeat",
+        tags=["Vocal", "Afrobeat"],
+    ),
+    StudioPreset(
+        id="reggaeton_vocal_wide",
+        name="Reggaeton Vocal Wide",
+        mode="mixing_only",
+        target="vocal",
+        genre="reggaeton",
+        description="Wide, modern reggaeton vocal with focused midrange.",
+        dsp_chain_reference="reggaeton",
+        tags=["Vocal", "Reggaeton", "Wide"],
+    ),
+    StudioPreset(
+        id="rock_vocal_grit",
+        name="Rock Vocal Grit",
+        mode="mixing_only",
+        target="vocal",
+        description="Adds saturation and bite for rock and alt vocals.",
+        dsp_chain_reference="aggressive_rap",
+        tags=["Vocal", "Rock"],
+    ),
+    StudioPreset(
+        id="rap_vocal_aggressive",
+        name="Rap Vocal Aggressive",
+        mode="mixing_only",
+        target="vocal",
+        genre="rap",
+        description="Hard-hitting rap vocal with dense compression and presence.",
+        dsp_chain_reference="aggressive_rap",
+        tags=["Vocal", "Rap", "Aggressive"],
+    ),
+    StudioPreset(
+        id="clean_pop_vocal",
+        name="Clean Pop Vocal",
+        mode="mixing_only",
+        target="vocal",
+        description="Polished pop vocal with clean top and tight lows.",
+        dsp_chain_reference="clean_vocal",
+        tags=["Vocal", "Pop", "Clean"],
+    ),
+
+    # Mixing only – beat only
+    StudioPreset(
+        id="beat_balance_clean",
+        name="Beat Balance Clean",
+        mode="mixing_only",
+        target="beat",
+        description="Subtle balance and tone shaping for stereo beats.",
+        dsp_chain_reference="streaming_master",
+        tags=["Beat", "Clean"],
+    ),
+    StudioPreset(
+        id="bass_controlled_beat",
+        name="Bass-Controlled Beat",
+        mode="mixing_only",
+        target="beat",
+        description="Focuses low-end control without flattening the groove.",
+        dsp_chain_reference="streaming_master",
+        tags=["Beat", "Bass"],
+    ),
+    StudioPreset(
+        id="club_beat_punch",
+        name="Club Beat Punch",
+        mode="mixing_only",
+        target="beat",
+        description="Adds punch and clarity tailored for club playback.",
+        dsp_chain_reference="streaming_master",
+        tags=["Beat", "Loud"],
+    ),
+    StudioPreset(
+        id="beat_stereo_polish",
+        name="Beat Stereo Polish",
+        mode="mixing_only",
+        target="beat",
+        description="Widens and gently shines stereo instrumentals.",
+        dsp_chain_reference="streaming_master",
+        tags=["Beat", "Wide"],
+    ),
+    StudioPreset(
+        id="vintage_beat_warmth",
+        name="Vintage Beat Warmth",
+        mode="mixing_only",
+        target="beat",
+        description="Warmer, rounded tone for sample-based or lo-fi beats.",
+        dsp_chain_reference="streaming_master",
+        tags=["Beat", "Warm"],
+    ),
+    StudioPreset(
+        id="minimal_beat_processing",
+        name="Minimal Beat Processing",
+        mode="mixing_only",
+        target="beat",
+        description="Safest option for leased beats – light glue, no heavy limiting.",
+        dsp_chain_reference="streaming_master",
+        tags=["Beat", "Safe"],
+    ),
+    StudioPreset(
+        id="trap_beat_tight",
+        name="Trap Beat Tight",
+        mode="mixing_only",
+        target="beat",
+        description="Modern trap beat polish with tightened transients.",
+        dsp_chain_reference="streaming_master",
+        tags=["Beat", "Trap"],
+    ),
+    StudioPreset(
+        id="afrobeat_groove_balance",
+        name="Afrobeat Groove Balance",
+        mode="mixing_only",
+        target="beat",
+        description="Balances groove elements in afrobeat instrumentals.",
+        dsp_chain_reference="streaming_master",
+        tags=["Beat", "Afrobeat"],
+    ),
+
+    # Mix + master – full mix bus
+    StudioPreset(
+        id="radio_ready_mix",
+        name="Radio Ready Mix",
+        mode="mix_and_master",
+        target="full_mix",
+        description="Balanced, commercial mix tuned to translate across systems.",
+        dsp_chain_reference="streaming_master",
+        tags=["Full Mix", "Radio"],
+    ),
+    StudioPreset(
+        id="loud_modern_mix",
+        name="Loud Modern Mix",
+        mode="mix_and_master",
+        target="full_mix",
+        description="Competitive loudness with controlled aggression for modern genres.",
+        dsp_chain_reference="streaming_master",
+        tags=["Full Mix", "Loud"],
+    ),
+    StudioPreset(
+        id="streaming_optimized_mix",
+        name="Streaming Optimized",
+        mode="mix_and_master",
+        target="full_mix",
+        description="Targets streaming services with sane loudness and dynamics.",
+        dsp_chain_reference="streaming_master",
+        tags=["Full Mix", "Streaming"],
+    ),
+    StudioPreset(
+        id="club_ready_mix",
+        name="Club Ready",
+        mode="mix_and_master",
+        target="full_mix",
+        description="Club-focused tone with extra punch and sub weight.",
+        dsp_chain_reference="streaming_master",
+        tags=["Full Mix", "Club"],
+    ),
+    StudioPreset(
+        id="warm_analog_mix",
+        name="Warm Analog Mix",
+        mode="mix_and_master",
+        target="full_mix",
+        description="Softer top and rounded mids inspired by analog chains.",
+        dsp_chain_reference="streaming_master",
+        tags=["Full Mix", "Warm"],
+    ),
+    StudioPreset(
+        id="vocal_forward_mix",
+        name="Vocal-Forward Mix",
+        mode="mix_and_master",
+        target="full_mix",
+        description="Brings the lead vocal slightly in front of the beat.",
+        dsp_chain_reference="streaming_master",
+        tags=["Full Mix", "Vocal"],
+    ),
+    StudioPreset(
+        id="bass_heavy_mix",
+        name="Bass-Heavy Mix",
+        mode="mix_and_master",
+        target="full_mix",
+        description="Emphasizes low-end impact while protecting headroom.",
+        dsp_chain_reference="streaming_master",
+        tags=["Full Mix", "Bass"],
+    ),
+    StudioPreset(
+        id="clean_commercial_mix",
+        name="Clean Commercial Mix",
+        mode="mix_and_master",
+        target="full_mix",
+        description="Neutral, clean mix/master suited to many genres.",
+        dsp_chain_reference="streaming_master",
+        tags=["Full Mix", "Clean"],
+    ),
+    StudioPreset(
+        id="wide_stereo_mix",
+        name="Wide Stereo Mix",
+        mode="mix_and_master",
+        target="full_mix",
+        description="Emphasizes stereo imaging while keeping mono compatibility in mind.",
+        dsp_chain_reference="streaming_master",
+        tags=["Full Mix", "Wide"],
+    ),
+    StudioPreset(
+        id="punchy_urban_mix",
+        name="Punchy Urban Mix",
+        mode="mix_and_master",
+        target="full_mix",
+        description="Designed for hip-hop, trap and dancehall mixes that need extra punch.",
+        dsp_chain_reference="streaming_master",
+        tags=["Full Mix", "Urban", "Punchy"],
+    ),
+
+    # Mastering only
+    StudioPreset(
+        id="streaming_master_minus14",
+        name="Streaming Master (-14 LUFS)",
+        mode="mastering_only",
+        target="full_mix",
+        description="Streaming-safe loudness around -14 LUFS with preserved dynamics.",
+        dsp_chain_reference="streaming_master",
+        tags=["Master", "Streaming"],
+    ),
+    StudioPreset(
+        id="loud_club_master",
+        name="Loud Club Master",
+        mode="mastering_only",
+        target="full_mix",
+        description="Hotter master tuned for club and DJ playback.",
+        dsp_chain_reference="streaming_master",
+        tags=["Master", "Club", "Loud"],
+    ),
+    StudioPreset(
+        id="radio_master",
+        name="Radio Master",
+        mode="mastering_only",
+        target="full_mix",
+        description="Balanced radio-ready master suitable for broadcast.",
+        dsp_chain_reference="streaming_master",
+        tags=["Master", "Radio"],
+    ),
+    StudioPreset(
+        id="beat_sale_master",
+        name="Beat Sale Master",
+        mode="mastering_only",
+        target="beat",
+        description="Safe master for selling beats without over-limiting.",
+        dsp_chain_reference="streaming_master",
+        tags=["Master", "Beat", "Safe"],
+    ),
+    StudioPreset(
+        id="warm_analog_master",
+        name="Warm Analog Master",
+        mode="mastering_only",
+        target="full_mix",
+        description="Analog-inspired tone with softened transients and gentle saturation.",
+        dsp_chain_reference="streaming_master",
+        tags=["Master", "Warm"],
+    ),
+    StudioPreset(
+        id="transparent_master",
+        name="Transparent Master",
+        mode="mastering_only",
+        target="full_mix",
+        description="Minimal coloration, focusing on level and subtle polish.",
+        dsp_chain_reference="streaming_master",
+        tags=["Master", "Clean"],
+    ),
+    StudioPreset(
+        id="bass_focus_master",
+        name="Bass Focus Master",
+        mode="mastering_only",
+        target="full_mix",
+        description="Reinforces low-end while controlling boominess.",
+        dsp_chain_reference="streaming_master",
+        tags=["Master", "Bass"],
+    ),
+    StudioPreset(
+        id="wide_stereo_master",
+        name="Wide Stereo Master",
+        mode="mastering_only",
+        target="full_mix",
+        description="Enhances stereo width at the mastering stage.",
+        dsp_chain_reference="streaming_master",
+        tags=["Master", "Wide"],
+    ),
+    StudioPreset(
+        id="clean_hiphop_master",
+        name="Clean Hip-Hop Master",
+        mode="mastering_only",
+        target="full_mix",
+        description="Clean, punchy master tuned for hip-hop and trap records.",
+        dsp_chain_reference="streaming_master",
+        tags=["Master", "Hip-Hop"],
+    ),
+    StudioPreset(
+        id="edm_loud_master",
+        name="EDM Loud Master",
+        mode="mastering_only",
+        target="full_mix",
+        description="High-energy, loud master for EDM and festival tracks.",
+        dsp_chain_reference="streaming_master",
+        tags=["Master", "EDM", "Loud"],
+    ),
+]
+
+
+@app.get("/studio/presets")
+async def list_studio_presets(mode: Optional[PresetMode] = None) -> list[StudioPreset]:
+    """Return studio presets, optionally filtered by processing mode.
+
+    This endpoint is consumed by the Next.js studio UI to populate the
+    dynamic preset selector. The actual DSP chain is determined by the
+    ``dsp_chain_reference`` field, which maps onto the DSP service
+    presets (clean_vocal, streaming_master, etc.).
+    """
+
+    if mode is None:
+        return STUDIO_PRESETS
+    return [p for p in STUDIO_PRESETS if p.mode == mode]
 
 
 # -------------------------
