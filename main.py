@@ -92,6 +92,11 @@ class ProcessRequest(BaseModel):
     ] = "mix_master"
     # Arbitrary JSON metadata about where the input files live
     # (e.g. Supabase storage paths, S3 URLs, or internal session IDs).
+    # Optional studio preset metadata. When provided, the backend will
+    # validate the preset against the studio registry and store resolved
+    # details on the job for downstream DSP workers.
+    preset_id: Optional[str] = None
+    target: Optional[Literal["vocal", "beat", "full_mix"]] = None
     input_files: Dict[str, Any]
 
 
@@ -577,6 +582,76 @@ STUDIO_PRESETS: list[StudioPreset] = [
 ]
 
 
+def _map_feature_type_to_preset_mode(feature_type: str) -> PresetMode | None:
+    """Map a feature_type used for gating to the studio PresetMode.
+
+    This helps keep the external credits API (audio_cleanup, mixing_only,
+    mix_master, mastering_only) in sync with the UI-facing preset modes
+    (audio_cleanup, mixing_only, mix_and_master, mastering_only).
+    """
+
+    if feature_type == "audio_cleanup":
+        return "audio_cleanup"
+    if feature_type == "mixing_only":
+        return "mixing_only"
+    if feature_type == "mix_master":
+        return "mix_and_master"
+    if feature_type == "mastering_only":
+        return "mastering_only"
+    return None
+
+
+def _resolve_preset_for_request(
+    payload: ProcessRequest,
+) -> tuple[StudioPreset | None, str | None]:
+    """Resolve and validate a StudioPreset for a job request.
+
+    Behaviour:
+    - If payload.preset_id is not provided, returns (None, payload.target).
+    - If preset_id is provided, it must exist in STUDIO_PRESETS.
+    - When feature_type is set, the preset's mode must be compatible.
+    - When target is set on the payload it must match the preset.target;
+      otherwise a 422 is raised.
+
+    Returns a tuple of (resolved_preset_or_None, effective_target_or_None).
+    """
+
+    preset_id = payload.preset_id
+    target = payload.target
+
+    if not preset_id:
+        # No studio preset metadata provided; fall back to legacy behaviour.
+        return None, target
+
+    mode = _map_feature_type_to_preset_mode(payload.feature_type)
+
+    preset = next((p for p in STUDIO_PRESETS if p.id == preset_id), None)
+    if preset is None:
+        raise HTTPException(status_code=400, detail=f"Unknown preset_id '{preset_id}'")
+
+    if mode is not None and preset.mode != mode:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Preset '{preset_id}' is not valid for feature_type "
+                f"'{payload.feature_type}'"
+            ),
+        )
+
+    effective_target = target or preset.target
+
+    if target is not None and target != preset.target:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Preset '{preset_id}' is for target '{preset.target}' "
+                f"but request specified target '{target}'."
+            ),
+        )
+
+    return preset, effective_target
+
+
 @app.get("/studio/presets")
 async def list_studio_presets(mode: Optional[PresetMode] = None) -> list[StudioPreset]:
     """Return studio presets, optionally filtered by processing mode.
@@ -902,16 +977,47 @@ async def create_process_job(payload: ProcessRequest) -> JobStatusResponse:
     start polling /status/{job_id} for progress updates.
     """
 
+    # Resolve and validate any studio preset metadata supplied by the caller.
+    # This keeps the async job pipeline consistent with the studio preset
+    # registry and prevents obviously incompatible combinations from running.
+    resolved_preset, effective_target = _resolve_preset_for_request(payload)
+
+    # Enrich input_files with lightweight preset metadata so downstream DSP
+    # workers can call the correct chain with the intended target.
+    enriched_input_files: Dict[str, Any] = dict(payload.input_files or {})
+
+    meta = enriched_input_files.get("_meta")
+    if not isinstance(meta, dict):
+        meta = {}
+        enriched_input_files["_meta"] = meta
+
+    if resolved_preset is not None:
+        meta.setdefault("studio_preset_id", resolved_preset.id)
+        meta.setdefault("studio_preset_mode", resolved_preset.mode)
+        meta.setdefault("studio_preset_target", resolved_preset.target)
+        meta.setdefault("dsp_chain_reference", resolved_preset.dsp_chain_reference)
+
+    if effective_target is not None:
+        # Target can be inferred from the preset or explicitly supplied
+        # by the caller; either way it is persisted for DSP workers.
+        meta.setdefault("target", effective_target)
+
+    # For analytics, prefer the canonical studio preset id when available;
+    # otherwise fall back to any legacy preset_key passed by callers.
+    db_preset_key = payload.preset_key
+    if resolved_preset is not None:
+        db_preset_key = resolved_preset.id
+
     try:
         job_row = await create_processing_job(
             {
                 "user_id": payload.user_id,
                 "job_type": payload.job_type,
-                "preset_key": payload.preset_key,
+                "preset_key": db_preset_key,
                 "status": "queued",
                 "progress": 0,
                 "current_stage": "queued",
-                "input_files": payload.input_files,
+                "input_files": enriched_input_files,
             }
         )
     except SupabaseConfigError as cfg_err:
@@ -921,7 +1027,9 @@ async def create_process_job(payload: ProcessRequest) -> JobStatusResponse:
 
     # Fire-and-forget background coroutine – this process should run with
     # WEB_CONCURRENCY=1 or otherwise ensure that jobs are not duplicated.
-    asyncio.create_task(_run_processing_job(job_id, payload.job_type, payload.input_files))
+    asyncio.create_task(
+        _run_processing_job(job_id, payload.job_type, enriched_input_files)
+    )
 
     return JobStatusResponse(
         id=job_id,
