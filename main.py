@@ -469,22 +469,13 @@ async def mix_master(
     adlibs: UploadFile | None = File(default=None),
     genre: str = Form(""),
     target_lufs: str = Form("-14"),
-    # Enforce feature gating before any heavy processing work is enqueued.
-    has_access = await _user_has_feature_access(payload.user_id, payload.feature_type)
-    if not has_access:
-        raise HTTPException(status_code=403, detail="Feature not available for this account")
+) -> dict[str, Any]:
+    """Legacy mix+master endpoint used by some clients.
 
-    try:
-        job_row = await create_processing_job(
-            {
-                "user_id": payload.user_id,
-                "job_type": payload.job_type,
-                "status": "queued",
-                "progress": 0,
-                "current_stage": "queued",
-                "input_files": {**payload.input_files, "feature_type": payload.feature_type},
-            }
-        )
+    Saves uploaded files to a session directory, enqueues a "mix_master" job,
+    and returns the queued job id plus session metadata.
+    """
+
     session_id = uuid.uuid4().hex[:12]
     session_dir = SESSIONS_DIR / session_id
     session_dir.mkdir(parents=True, exist_ok=True)
