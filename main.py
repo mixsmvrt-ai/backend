@@ -21,6 +21,7 @@ from supabase_client import (
     supabase_insert,
     SupabaseConfigError,
 )
+from progress import update_progress, mark_job_complete, mark_job_failed
 
 app = FastAPI(title="RiddimBase Studio Backend")
 
@@ -887,28 +888,26 @@ async def _run_processing_job(job_id: str, job_type: str, input_files: Dict[str,
 
         # Execute each conceptual DSP stage; in a production system, replace
         # the sleeps with real calls into the DSP microservice, one per stage.
-        for index, stage_name in enumerate(steps):
+        for index, stage_name in enumerate(steps, start=1):
             last_stage_name = stage_name
-            is_last = index == total_steps - 1
+            is_last = index == total_steps
+
+            # Simulate DSP work for this step (replace with real DSP call).
+            # await call_dsp_stage(...)
+            await asyncio.sleep(0.1)
 
             if not is_last:
-                progress = int(((index + 1) / total_steps) * 100)
-                await update_processing_job(
-                    job_id,
-                    {
-                        "status": "processing",
-                        "progress": progress,
-                        "current_stage": stage_name,
-                    },
+                # Non-final steps use the shared progress helper so the
+                # percentage is derived from completed_steps / total_steps.
+                await update_progress(
+                    job_id=job_id,
+                    step_name=stage_name,
+                    step_index=index,
+                    total_steps=total_steps,
                 )
-                # await call_dsp_stage(...)
-                await asyncio.sleep(0.1)
             else:
-                # Final stage: run the last bit of DSP work, then mark the
-                # job complete at 100% with the final stage name.
-                # await call_dsp_stage(...)
-                await asyncio.sleep(0.1)
-
+                # Final stage: mark the job as completed at 100% and attach
+                # any output file metadata.
                 output_files: Dict[str, Any] = {
                     "master_url": input_files.get("target_path", ""),
                 }
@@ -945,15 +944,8 @@ async def _run_processing_job(job_id: str, job_type: str, input_files: Dict[str,
         # Best-effort failure update so the job is not stuck forever.
         message = str(exc)
         try:
-            stage_label = f"Error during {last_stage_name}" if last_stage_name else "error"
-            await update_processing_job(
-                job_id,
-                {
-                    "status": "failed",
-                    "current_stage": stage_label,
-                    "error_message": message,
-                },
-            )
+            step_name = last_stage_name or "pipeline"
+            await mark_job_failed(job_id, step_name=step_name, error_message=message)
         except Exception:
             # If we cannot even update Supabase, just swallow – there's
             # nowhere else to report this in a background task.
