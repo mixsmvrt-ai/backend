@@ -101,6 +101,11 @@ class ProcessRequest(BaseModel):
     input_files: Dict[str, Any]
 
 
+class StepStatus(BaseModel):
+    name: str
+    completed: bool
+
+
 class JobStatusResponse(BaseModel):
     id: str
     status: Literal["queued", "processing", "completed", "failed"]
@@ -108,11 +113,7 @@ class JobStatusResponse(BaseModel):
     current_stage: Optional[str] = None
     error_message: Optional[str] = None
     output_files: Optional[Dict[str, Any]] = None
-
-
-class StepStatus(BaseModel):
-    name: str
-    completed: bool
+    steps: Optional[list[StepStatus]] = None
 
 
 # -------------------------
@@ -1737,13 +1738,20 @@ async def admin_job_detail(job_id: str):
     input_files = job_row.get("input_files") or {}
     output_files = job_row.get("output_files") or {}
 
-    # Provide some generic step labels so the admin UI timeline stays useful
-    job_type = job_row.get("job_type") or "mix_master"
-    steps: list[str] = ["Upload received"]
-    if job_type in {"mix", "mix_master"}:
-        steps.append("Mixing")
-    if job_type in {"master", "mix_master"}:
-        steps.append("Mastering")
+    # Prefer the dynamic step metadata when available so this view
+    # stays in sync with the studio/back-end pipeline. Fall back to a
+    # simple generic template for legacy jobs that don't carry
+    # input_files._meta.steps.
+    step_statuses = _build_step_statuses(job_row)
+    if step_statuses is not None:
+        steps: list[str] = [s.name for s in step_statuses]
+    else:
+        job_type = job_row.get("job_type") or "mix_master"
+        steps = ["Upload received"]
+        if job_type in {"mix", "mix_master"}:
+            steps.append("Mixing")
+        if job_type in {"master", "mix_master"}:
+            steps.append("Mastering")
 
     job = AdminJobDetail(
         id=str(job_row.get("id")),
