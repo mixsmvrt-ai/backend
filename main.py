@@ -1,11 +1,15 @@
 from fastapi import FastAPI, File, UploadFile, Form, Body, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pathlib import Path
 import shutil
 import uuid
 import asyncio
+import os
 from datetime import datetime, timedelta, date
 from typing import Literal, Optional, Any, Dict
+
+import httpx
 
 from pydantic import BaseModel
 
@@ -24,6 +28,10 @@ from supabase_client import (
 from progress import update_progress, mark_job_complete, mark_job_failed
 
 app = FastAPI(title="RiddimBase Studio Backend")
+
+# Base URL for the external DSP service. This is proxied via /dsp/* endpoints
+# so the browser only talks to this backend (which already has CORS configured).
+DSP_BASE_URL = os.getenv("DSP_URL", "https://mixsmvrt-dsp-1.onrender.com").rstrip("/")
 
 # Allow local Next.js dev and the deployed studio frontend
 app.add_middleware(
@@ -1190,6 +1198,71 @@ async def get_job_status(job_id: str) -> JobStatusResponse:
         output_files=job_row.get("output_files"),
         steps=steps,
     )
+
+
+@app.post("/dsp/process")
+async def proxy_dsp_process(
+    file: UploadFile = File(...),
+    track_type: str = Form(...),
+    preset: str = Form(...),
+    target: str = Form(...),
+    gender: Optional[str] = Form(None),
+    throw_fx_mode: Optional[str] = Form(None),
+    genre: Optional[str] = Form(None),
+    reference_profile: Optional[str] = Form(None),
+) -> JSONResponse:
+    """Proxy the studio's multipart /process call to the external DSP service.
+
+    This keeps the browser talking only to this backend (which already has
+    CORS configured for the deployed frontend), while the backend communicates
+    with the DSP service without browser CORS restrictions.
+    """
+
+    # Build the form data as expected by the DSP service
+    data: Dict[str, str] = {
+        "track_type": track_type,
+        "preset": preset,
+        "target": target,
+    }
+    if gender is not None:
+        data["gender"] = gender
+    if throw_fx_mode is not None:
+        data["throw_fx_mode"] = throw_fx_mode
+    if genre is not None:
+        data["genre"] = genre
+    if reference_profile is not None:
+        data["reference_profile"] = reference_profile
+
+    # Read uploaded file contents and forward to DSP
+    file_bytes = await file.read()
+    files = {
+        "file": (
+            file.filename or "input.wav",
+            file_bytes,
+            file.content_type or "audio/wav",
+        )
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(f"{DSP_BASE_URL}/process", data=data, files=files)
+    except httpx.RequestError as exc:  # pragma: no cover - network errors
+        raise HTTPException(status_code=502, detail=f"DSP service unreachable: {exc}") from exc
+
+    # Bubble up DSP errors with as much detail as possible
+    if resp.status_code >= 400:
+        try:
+            detail: Any = resp.json()
+        except ValueError:
+            detail = {"detail": resp.text}
+        raise HTTPException(status_code=resp.status_code, detail=detail)
+
+    try:
+        payload = resp.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail=f"Invalid JSON from DSP: {exc}") from exc
+
+    return JSONResponse(status_code=resp.status_code, content=payload)
 
 
 @app.post("/api/mix-master")
