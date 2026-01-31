@@ -1422,6 +1422,13 @@ class AdminPlan(BaseModel):
     stem_limit: int | None = None
 
 
+class AdminPlanUpdate(BaseModel):
+	name: str | None = None
+	price_month: float | None = None
+	credits: int | None = None
+	stem_limit: int | None = None
+
+
 class AdminPayment(BaseModel):
     id: str
     user_email: str
@@ -1933,6 +1940,34 @@ async def admin_plans_list():
         )
 
     return {"plans": plans}
+
+
+@app.patch("/admin/plans/{plan_id}")
+async def admin_plans_update(plan_id: str, payload: AdminPlanUpdate):
+    """Update a billing plan from the admin UI."""
+
+    updates = {k: v for k, v in payload.dict().items() if v is not None}
+    if not updates:
+        return {"plan": None}
+
+    try:
+        rows = await supabase_patch("billing_plans", {"id": f"eq.{plan_id}"}, updates)
+    except SupabaseConfigError as cfg_err:
+        raise HTTPException(status_code=500, detail=str(cfg_err)) from cfg_err
+
+    if not rows:
+        raise HTTPException(status_code=404, detail="Plan not found")
+
+    row = rows[0]
+    plan = AdminPlan(
+        id=str(row.get("id")),
+        name=row.get("name") or "Unnamed plan",
+        price_month=float(row.get("price_month") or 0.0),
+        credits=int(row.get("credits") or 0),
+        stem_limit=row.get("stem_limit"),
+    )
+
+    return {"plan": plan}
 
 
 @app.get("/admin/payments")
