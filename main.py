@@ -1048,9 +1048,8 @@ async def _run_mix_master_job(
     reports progress into Supabase as it goes.
     """
 
+    last_stage_name: str | None = None
     try:
-        last_stage_name: str | None = None
-
         await update_processing_job(
             job_id,
             {
