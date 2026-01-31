@@ -7,7 +7,7 @@ import uuid
 import asyncio
 import os
 from datetime import datetime, timedelta, date
-from typing import Literal, Optional, Any, Dict
+from typing import Literal, Optional, Any, Dict, List
 
 import httpx
 
@@ -122,6 +122,77 @@ class JobStatusResponse(BaseModel):
     error_message: Optional[str] = None
     output_files: Optional[Dict[str, Any]] = None
     steps: Optional[list[StepStatus]] = None
+
+
+# -------------------------
+# Support tickets (Supabase-backed)
+# -------------------------
+
+
+class SupportTicketCreate(BaseModel):
+    user_id: Optional[str] = None
+    email: str
+    subject: str
+    message: str
+
+
+class SupportTicket(BaseModel):
+    id: str
+    user_id: Optional[str] = None
+    email: str
+    subject: str
+    message: str
+    status: str
+    created_at: datetime
+
+
+@app.post("/api/support/tickets", response_model=SupportTicket)
+async def create_support_ticket(payload: SupportTicketCreate):
+    """Create a support ticket record in Supabase.
+
+    The frontend passes the user's email, subject and message. If a user_id is
+    provided it will be attached for easier correlation with jobs and billing.
+    """
+
+    try:
+        ticket_data: Dict[str, Any] = {
+            "email": payload.email,
+            "subject": payload.subject,
+            "message": payload.message,
+        }
+        if payload.user_id:
+            ticket_data["user_id"] = payload.user_id
+
+        row = await supabase_insert("support_tickets", ticket_data)
+    except SupabaseConfigError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return SupportTicket(**row)
+
+
+class SupportTicketListResponse(BaseModel):
+    tickets: List[SupportTicket]
+
+
+@app.get("/admin/support/tickets", response_model=SupportTicketListResponse)
+async def list_support_tickets():
+    """List recent support tickets for the admin panel.
+
+    This endpoint is intended to be called from the admin UI using the
+    backend's own Supabase service role; it is not exposed directly to
+    untrusted browsers.
+    """
+
+    try:
+        rows = await supabase_select(
+            "support_tickets",
+            params={"order": "created_at.desc"},
+        )
+    except SupabaseConfigError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    tickets = [SupportTicket(**row) for row in rows]
+    return SupportTicketListResponse(tickets=tickets)
 
 
 # -------------------------
