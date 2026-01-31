@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+# pyright: reportUnknownMemberType=false, reportUnknownArgumentType=false
+
 import numpy as np
 import pyloudnorm as pyln
 from pedalboard import (
