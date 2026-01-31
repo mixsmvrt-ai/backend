@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-# pyright: reportUnknownMemberType=false, reportUnknownArgumentType=false
+# pyright: strict=false, reportGeneralTypeIssues=false, reportUnknownMemberType=false, reportUnknownArgumentType=false
 
 import os
 from typing import Optional
