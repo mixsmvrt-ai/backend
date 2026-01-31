@@ -1222,7 +1222,24 @@ async def create_process_job(payload: ProcessRequest) -> JobStatusResponse:
             }
         )
     except SupabaseConfigError as cfg_err:
+        # Configuration issue (missing URL/key) – treat as a backend error.
         raise HTTPException(status_code=500, detail=str(cfg_err)) from cfg_err
+    except httpx.HTTPStatusError as http_err:
+        # Surface Supabase's error payload instead of crashing the whole request.
+        status_code = http_err.response.status_code if http_err.response is not None else 502
+        supabase_body: str
+        try:
+            supabase_body = http_err.response.text if http_err.response is not None else str(http_err)
+        except Exception:  # pragma: no cover - very defensive
+            supabase_body = str(http_err)
+
+        raise HTTPException(
+            status_code=status_code,
+            detail={
+                "error": "SUPABASE_INSERT_FAILED",
+                "supabase": supabase_body,
+            },
+        ) from http_err
 
     job_id = str(job_row["id"])
 
