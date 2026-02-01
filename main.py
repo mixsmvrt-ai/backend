@@ -122,6 +122,8 @@ class JobStatusResponse(BaseModel):
     error_message: Optional[str] = None
     output_files: Optional[Dict[str, Any]] = None
     steps: Optional[list[StepStatus]] = None
+    estimated_total_sec: Optional[float] = None
+    elapsed_sec: Optional[float] = None
 
 
 # -------------------------
@@ -143,6 +145,7 @@ class SupportTicket(BaseModel):
     subject: str
     message: str
     status: str
+    created_at: datetime
     created_at: datetime
 
 
@@ -1264,18 +1267,43 @@ async def create_process_job(payload: ProcessRequest) -> JobStatusResponse:
     if resolved_preset is not None:
         db_preset_key = resolved_preset.id
 
+    # Start with base job data persisted to Supabase.
+    job_data: Dict[str, Any] = {
+        "user_id": payload.user_id,
+        "job_type": payload.job_type,
+        "preset_key": db_preset_key,
+        "status": "queued",
+        "progress": 0,
+        "current_stage": "queued",
+        "input_files": enriched_input_files,
+    }
+
+    # Derive a coarse estimated total processing time (seconds) from duration_sec and feature_type.
+    # This is a heuristic that gives the frontend enough signal for a remaining-time estimate.
     try:
-        job_row = await create_processing_job(
-            {
-                "user_id": payload.user_id,
-                "job_type": payload.job_type,
-                "preset_key": db_preset_key,
-                "status": "queued",
-                "progress": 0,
-                "current_stage": "queued",
-                "input_files": enriched_input_files,
-            }
-        )
+        duration_sec_val = float(job_data.get("duration_sec") or 0) if job_data.get("duration_sec") is not None else 0.0
+    except Exception:  # pragma: no cover - defensive
+        duration_sec_val = 0.0
+
+    base_factor = 0.15  # default: ~15% of track length
+    if feature_type_value in ("mix_master", "mix-master", "mix_mastering"):
+        base_factor = 0.22
+    elif feature_type_value in ("mastering_only", "master-only"):
+        base_factor = 0.18
+    elif feature_type_value in ("audio_cleanup", "cleanup"):
+        base_factor = 0.10
+    elif feature_type_value in ("podcast",):
+        base_factor = 0.12
+
+    estimated_total_sec = (
+        max(10.0, min(300.0, duration_sec_val * base_factor)) if duration_sec_val > 0 else None
+    )
+
+    if estimated_total_sec is not None:
+        job_data["estimated_total_sec"] = estimated_total_sec
+
+    try:
+        job_row = await create_processing_job(job_data)
     except SupabaseConfigError as cfg_err:
         # Configuration issue (missing URL/key) – treat as a backend error.
         raise HTTPException(status_code=500, detail=str(cfg_err)) from cfg_err
@@ -1306,6 +1334,11 @@ async def create_process_job(payload: ProcessRequest) -> JobStatusResponse:
 
     steps = _build_step_statuses(job_row) or []
 
+    created_at = job_row.get("created_at")
+    elapsed_sec: Optional[float] = None
+    if isinstance(created_at, datetime):
+        elapsed_sec = (datetime.now(created_at.tzinfo) - created_at).total_seconds()
+
     return JobStatusResponse(
         id=job_id,
         status=job_row.get("status", "queued"),
@@ -1314,6 +1347,8 @@ async def create_process_job(payload: ProcessRequest) -> JobStatusResponse:
         error_message=job_row.get("error_message"),
         output_files=job_row.get("output_files"),
         steps=steps,
+        estimated_total_sec=job_row.get("estimated_total_sec"),
+        elapsed_sec=elapsed_sec,
     )
 
 
@@ -1331,6 +1366,11 @@ async def get_job_status(job_id: str) -> JobStatusResponse:
 
     steps = _build_step_statuses(job_row) or []
 
+    created_at = job_row.get("created_at")
+    elapsed_sec: Optional[float] = None
+    if isinstance(created_at, datetime):
+        elapsed_sec = (datetime.now(created_at.tzinfo) - created_at).total_seconds()
+
     return JobStatusResponse(
         id=str(job_row["id"]),
         status=job_row.get("status", "queued"),
@@ -1339,6 +1379,8 @@ async def get_job_status(job_id: str) -> JobStatusResponse:
         error_message=job_row.get("error_message"),
         output_files=job_row.get("output_files"),
         steps=steps,
+        estimated_total_sec=job_row.get("estimated_total_sec"),
+        elapsed_sec=elapsed_sec,
     )
 
 
