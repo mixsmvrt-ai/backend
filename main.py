@@ -2164,24 +2164,42 @@ async def admin_dashboard():
 
 @app.get("/admin/users")
 async def admin_users_list():
-    """List users from Supabase user_profiles with plan info."""
+    """List users for the admin panel.
+
+    We primarily rely on Supabase auth.users so every authenticated
+    account shows up, and then enrich with profile/plan details from
+    user_profiles and billing_plans when available.
+    """
 
     try:
+        # Core auth identities (email, id)
+        auth_users = await supabase_select("auth.users")
+        # Optional per-user metadata (country, status, plan_id)
         profiles = await supabase_select("user_profiles")
         plans = await supabase_select("billing_plans")
     except SupabaseConfigError as cfg_err:
         raise HTTPException(status_code=500, detail=str(cfg_err)) from cfg_err
 
     plan_by_id = {str(p.get("id")): p.get("name") for p in plans}
+    profile_by_user_id: dict[str, dict[str, Any]] = {
+        str(p.get("user_id")): p for p in profiles
+    }
 
     users: list[AdminUser] = []
-    for row in profiles:
-        user_id = str(row.get("user_id"))
-        email = row.get("email") or ""
-        country = row.get("country")
-        status_raw = row.get("status") or "active"
-        plan_id = row.get("plan_id")
-        plan_name = plan_by_id.get(str(plan_id)) if plan_id is not None else None
+    for auth_row in auth_users:
+        user_id = str(auth_row.get("id"))
+        email = auth_row.get("email") or ""
+
+        profile = profile_by_user_id.get(user_id)
+
+        country = profile.get("country") if profile else None
+        status_raw = (profile.get("status") if profile else None) or "active"
+        plan_name: str | None = None
+
+        if profile is not None:
+            plan_id = profile.get("plan_id")
+            if plan_id is not None:
+                plan_name = plan_by_id.get(str(plan_id))
 
         users.append(
             AdminUser(
@@ -2189,7 +2207,7 @@ async def admin_users_list():
                 email=email,
                 plan=plan_name,
                 country=country,
-                status=status_raw,  # constrained by DB check
+                status=status_raw,  # constrained by DB check / default
             )
         )
 
