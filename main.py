@@ -1394,6 +1394,8 @@ async def proxy_dsp_process(
     throw_fx_mode: Optional[str] = Form(None),
     genre: Optional[str] = Form(None),
     reference_profile: Optional[str] = Form(None),
+    session_key: Optional[str] = Form(None),
+    session_scale: Optional[str] = Form(None),
 ) -> JSONResponse:
     """Proxy the studio's multipart /process call to the external DSP service.
 
@@ -1416,6 +1418,10 @@ async def proxy_dsp_process(
         data["genre"] = genre
     if reference_profile is not None:
         data["reference_profile"] = reference_profile
+    if session_key is not None:
+        data["session_key"] = session_key
+    if session_scale is not None:
+        data["session_scale"] = session_scale
 
     # Read uploaded file contents and forward to DSP
     file_bytes = await file.read()
