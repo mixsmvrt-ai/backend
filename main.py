@@ -195,6 +195,61 @@ async def list_support_tickets():
     return SupportTicketListResponse(tickets=tickets)
 
 
+class SupportTicketStats(BaseModel):
+    total: int
+    open: int
+    resolved: int
+    closed: int
+
+
+@app.get("/admin/support/tickets/stats", response_model=SupportTicketStats)
+async def support_ticket_stats():
+    """Return basic counts for support tickets for use in the admin UI."""
+
+    try:
+        rows = await supabase_select(
+            "support_tickets",
+            params={"select": "id,status"},
+        )
+    except SupabaseConfigError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    total = len(rows)
+    open_count = sum(1 for row in rows if row.get("status") == "open")
+    resolved_count = sum(1 for row in rows if row.get("status") == "resolved")
+    closed_count = sum(1 for row in rows if row.get("status") == "closed")
+
+    return SupportTicketStats(
+        total=total,
+        open=open_count,
+        resolved=resolved_count,
+        closed=closed_count,
+    )
+
+
+@app.post("/admin/support/tickets/{ticket_id}/resolve", response_model=SupportTicket)
+async def resolve_support_ticket(ticket_id: str):
+    """Mark a support ticket as resolved.
+
+    This is used from the admin UI to move tickets from the "open" bucket
+    into "resolved" while keeping the original record.
+    """
+
+    try:
+        updated_rows = await supabase_patch(
+            "support_tickets",
+            {"id": f"eq.{ticket_id}"},
+            {"status": "resolved"},
+        )
+    except SupabaseConfigError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    if not updated_rows:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+
+    return SupportTicket(**updated_rows[0])
+
+
 # -------------------------
 # Studio presets registry (for UI + validation)
 # -------------------------
