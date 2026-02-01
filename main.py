@@ -124,6 +124,11 @@ class JobStatusResponse(BaseModel):
     steps: Optional[list[StepStatus]] = None
     estimated_total_sec: Optional[float] = None
     elapsed_sec: Optional[float] = None
+    # Optional queue metadata so the studio UI can show
+    # where a job sits in the line for its feature_type.
+    queue_feature_type: Optional[str] = None
+    queue_position: Optional[int] = None
+    queue_size: Optional[int] = None
 
 
 # -------------------------
@@ -1216,6 +1221,59 @@ async def _user_has_feature_access(user_id: str | None, feature_type: str) -> bo
     return False
 
 
+def _extract_job_feature_type(job_row: dict[str, Any]) -> str | None:
+    """Extract feature_type from a processing_jobs row's input_files._meta."""
+
+    input_files = job_row.get("input_files")
+    if not isinstance(input_files, dict):
+        return None
+    meta = input_files.get("_meta")
+    if not isinstance(meta, dict):
+        return None
+    ft = meta.get("feature_type") or meta.get("flow_key")
+    return str(ft) if ft is not None else None
+
+
+async def _calculate_queue_metadata(job_row: dict[str, Any]) -> tuple[str | None, int | None, int | None]:
+    """Return (feature_type, position, size) for the job's queue.
+
+    Jobs are ordered by created_at; the queue consists of jobs with
+    status in {queued, processing} that share the same feature_type.
+    """
+
+    feature_type = _extract_job_feature_type(job_row)
+    if not feature_type:
+        return None, None, None
+
+    try:
+        jobs = await supabase_select(
+            "processing_jobs",
+            {"order": "created_at.asc"},
+        )
+    except SupabaseConfigError:
+        return feature_type, None, None
+
+    active_statuses = {"queued", "processing"}
+    active_jobs: list[dict[str, Any]] = []
+    for row in jobs:
+        status = str(row.get("status") or "").lower()
+        if status not in active_statuses:
+            continue
+        if _extract_job_feature_type(row) != feature_type:
+            continue
+        active_jobs.append(row)
+
+    queue_size = len(active_jobs)
+    job_id_str = str(job_row.get("id"))
+    position: int | None = None
+    for idx, row in enumerate(active_jobs):
+        if str(row.get("id")) == job_id_str:
+            position = idx + 1
+            break
+
+    return feature_type, position, queue_size if queue_size > 0 else None
+
+
 async def _consume_user_credit(user_id: str | None, feature_type: str | None) -> None:
     """Best-effort decrement of a single credit for a feature type.
 
@@ -1616,6 +1674,8 @@ async def create_process_job(payload: ProcessRequest) -> JobStatusResponse:
 
     steps = _build_step_statuses(job_row) or []
 
+    queue_feature_type, queue_position, queue_size = await _calculate_queue_metadata(job_row)
+
     created_at = job_row.get("created_at")
     elapsed_sec: Optional[float] = None
     if isinstance(created_at, datetime):
@@ -1631,6 +1691,9 @@ async def create_process_job(payload: ProcessRequest) -> JobStatusResponse:
         steps=steps,
         estimated_total_sec=job_row.get("estimated_total_sec"),
         elapsed_sec=elapsed_sec,
+        queue_feature_type=queue_feature_type,
+        queue_position=queue_position,
+        queue_size=queue_size,
     )
 
 
@@ -1653,6 +1716,8 @@ async def get_job_status(job_id: str) -> JobStatusResponse:
     if isinstance(created_at, datetime):
         elapsed_sec = (datetime.now(created_at.tzinfo) - created_at).total_seconds()
 
+    queue_feature_type, queue_position, queue_size = await _calculate_queue_metadata(job_row)
+
     return JobStatusResponse(
         id=str(job_row["id"]),
         status=job_row.get("status", "queued"),
@@ -1663,6 +1728,9 @@ async def get_job_status(job_id: str) -> JobStatusResponse:
         steps=steps,
         estimated_total_sec=job_row.get("estimated_total_sec"),
         elapsed_sec=elapsed_sec,
+        queue_feature_type=queue_feature_type,
+        queue_position=queue_position,
+        queue_size=queue_size,
     )
 
 
