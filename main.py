@@ -230,6 +230,59 @@ async def support_ticket_stats():
     )
 
 
+class UserFeatureCredit(BaseModel):
+    feature_type: str
+    remaining_uses: int
+    expires_at: Optional[datetime] = None
+
+
+class UserCreditsResponse(BaseModel):
+    credits: list[UserFeatureCredit]
+
+
+@app.get("/studio/credits", response_model=UserCreditsResponse)
+async def get_user_credits(user_id: str) -> UserCreditsResponse:
+    """Return the remaining credits for a user's gated features.
+
+    The studio UI calls this to display how many Audio Cleanups,
+    Mixing Only, Mix+Master, and Mastering Only runs are left.
+    """
+
+    try:
+        rows = await supabase_select(
+            "user_credits",
+            {"user_id": f"eq.{user_id}"},
+        )
+    except SupabaseConfigError as cfg_err:
+        raise HTTPException(status_code=500, detail=str(cfg_err)) from cfg_err
+
+    credits: list[UserFeatureCredit] = []
+    for row in rows:
+        ft = str(row.get("feature_type") or "")
+        if not ft:
+            continue
+        remaining_raw = row.get("remaining_uses")
+        try:
+            remaining_val = int(remaining_raw)
+        except (TypeError, ValueError):
+            remaining_val = 0
+
+        expires_at_raw = row.get("expires_at")
+        expires_dt: Optional[datetime] = None
+        if isinstance(expires_at_raw, str):
+            expires_dt = _parse_iso_datetime(expires_at_raw)
+
+        credits.append(
+            UserFeatureCredit(
+                feature_type=ft,
+                remaining_uses=remaining_val,
+                expires_at=expires_dt,
+            )
+        )
+
+    return UserCreditsResponse(credits=credits)
+
+
 @app.post("/admin/support/tickets/{ticket_id}/resolve", response_model=SupportTicket)
 async def resolve_support_ticket(ticket_id: str):
     """Mark a support ticket as resolved.
@@ -983,6 +1036,17 @@ class CheckoutCapturePayload(BaseModel):
     amount_cents: int
     provider: Literal["paypal"] = "paypal"
     provider_payment_id: Optional[str] = None
+    # Optional: when capturing pay-as-you-go purchases, indicate which
+    # feature the user is buying credits for and how many.
+    feature_type: Optional[
+        Literal[
+            "audio_cleanup",
+            "mixing_only",
+            "mix_master",
+            "mastering_only",
+        ]
+    ] = None
+    quantity: Optional[int] = None
 
 
 class CheckoutCaptureResponse(BaseModel):
@@ -991,6 +1055,109 @@ class CheckoutCaptureResponse(BaseModel):
     plan_key: str
     amount_cents: int
     currency: str = "USD"
+
+
+async def _apply_plan_credits_for_user(
+    user_id: str,
+    plan_key: str,
+    feature_type: str | None,
+    quantity: int | None,
+) -> None:
+    """Best-effort helper to grant credits when a plan is purchased.
+
+    Behaviour:
+    - For subscription plans (creator, pro), seed a fresh set of credits
+      for the current billing period. The concrete per-feature allowances
+      mirror the marketing copy on the pricing page.
+    - For the starter (pay‑as‑you‑go) plan, add credits for the specific
+      feature_type that was purchased.
+    """
+
+    # Map subscription plan keys to their monthly allowances.
+    subscription_entitlements: dict[str, dict[str, int]] = {
+        "creator": {
+            # "6 Audio Cleanups", "3 Mixing Only", "1 Mastering Only"
+            "audio_cleanup": 6,
+            "mixing_only": 3,
+            "mastering_only": 1,
+        },
+        "pro": {
+            # "10 Audio Cleanups", "6 Mixing Only", "3 Mixing + Mastering"
+            "audio_cleanup": 10,
+            "mixing_only": 6,
+            "mix_master": 3,
+            # "Unlimited Mastering Only" is handled as a special unlimited
+            # row by using remaining_uses = -1.
+            "mastering_only": -1,
+        },
+    }
+
+    entitlements: dict[str, int] = {}
+    expires_at: datetime | None = None
+
+    if plan_key in subscription_entitlements:
+        entitlements = subscription_entitlements[plan_key]
+        # Treat subscription credits as valid for roughly one month.
+        expires_at = datetime.utcnow() + timedelta(days=32)
+    elif plan_key == "starter" and feature_type:
+        # Pay-as-you-go: add credits for the purchased feature only.
+        qty = quantity if isinstance(quantity, int) and quantity > 0 else 1
+        entitlements = {feature_type: qty}
+        expires_at = None
+    else:
+        # Unknown plan key or insufficient context – no credits to apply.
+        return
+
+    for ft, allowance in entitlements.items():
+        try:
+            # Look for an existing credit bucket for this user + feature.
+            existing_rows = await supabase_select(
+                "user_credits",
+                {
+                    "user_id": f"eq.{user_id}",
+                    "feature_type": f"eq.{ft}",
+                    "limit": 1,
+                },
+            )
+        except SupabaseConfigError:
+            # If billing is misconfigured, skip credits but don't break checkout.
+            return
+
+        # Unlimited is represented as remaining_uses = -1.
+        new_remaining = allowance
+        existing_id: str | None = None
+        if existing_rows:
+            existing = existing_rows[0]
+            existing_id = str(existing.get("id")) if existing.get("id") is not None else None
+            try:
+                existing_remaining = int(existing.get("remaining_uses") or 0)
+            except (TypeError, ValueError):
+                existing_remaining = 0
+
+            # For subscriptions, reset each billing period; for pay‑as‑you‑go
+            # purchases, accumulate on top of any existing balance.
+            if plan_key == "starter" and allowance >= 0 and existing_remaining >= 0:
+                new_remaining = existing_remaining + allowance
+        payload: dict[str, Any] = {
+            "user_id": user_id,
+            "feature_type": ft,
+            "remaining_uses": new_remaining,
+        }
+        if expires_at is not None and allowance >= 0:
+            payload["expires_at"] = expires_at.isoformat()
+
+        try:
+            if existing_rows and existing_id:
+                await supabase_patch(
+                    "user_credits",
+                    {"id": f"eq.{existing_id}"},
+                    payload,
+                )
+            else:
+                await supabase_insert("user_credits", payload)
+        except SupabaseConfigError:
+            # As above, do not fail checkout if credit writes are unavailable.
+            return
 
 
 async def _user_has_feature_access(user_id: str | None, feature_type: str) -> bool:
@@ -1047,6 +1214,66 @@ async def _user_has_feature_access(user_id: str | None, feature_type: str) -> bo
         return True
 
     return False
+
+
+async def _consume_user_credit(user_id: str | None, feature_type: str | None) -> None:
+    """Best-effort decrement of a single credit for a feature type.
+
+    This is called after a processing job is created so that the remaining
+    balance reflects actual usage. It is intentionally tolerant of
+    Supabase errors to avoid breaking the core processing flow.
+    """
+
+    if not user_id or not feature_type:
+        return
+
+    try:
+        credits = await supabase_select(
+            "user_credits",
+            {
+                "user_id": f"eq.{user_id}",
+                "feature_type": f"eq.{feature_type}",
+            },
+        )
+    except SupabaseConfigError:
+        return
+
+    now = datetime.utcnow()
+    for credit in credits:
+        remaining_raw = credit.get("remaining_uses")
+        try:
+            remaining = int(remaining_raw)
+        except (TypeError, ValueError):
+            remaining = 0
+
+        # Negative remaining_uses means unlimited – nothing to decrement.
+        if remaining < 0:
+            return
+        if remaining <= 0:
+            continue
+
+        expires_at_raw = credit.get("expires_at")
+        if isinstance(expires_at_raw, str):
+            expires_dt = _parse_iso_datetime(expires_at_raw)
+            if expires_dt is not None and expires_dt <= now:
+                continue
+
+        credit_id = credit.get("id")
+        if not credit_id:
+            continue
+
+        new_remaining = max(0, remaining - 1)
+        try:
+            await supabase_patch(
+                "user_credits",
+                {"id": f"eq.{credit_id}"},
+                {"remaining_uses": new_remaining},
+            )
+        except SupabaseConfigError:
+            return
+
+        # Only decrement a single bucket per job.
+        return
 
 
 async def _run_processing_job(job_id: str, job_type: str, input_files: Dict[str, Any]) -> None:
@@ -1373,6 +1600,13 @@ async def create_process_job(payload: ProcessRequest) -> JobStatusResponse:
         ) from http_err
 
     job_id = str(job_row["id"])
+
+    # Best-effort: decrement a credit for this feature_type so the
+    # studio UI can reflect remaining usage. This does not currently
+    # gate access – it simply tracks consumption.
+    asyncio.create_task(
+        _consume_user_credit(payload.user_id, feature_type_value)
+    )
 
     # Fire-and-forget background coroutine – this process should run with
     # WEB_CONCURRENCY=1 or otherwise ensure that jobs are not duplicated.
@@ -1955,20 +2189,78 @@ async def admin_update_user_status(user_id: str, payload: UpdateUserStatusPayloa
 
 
 class UpdateUserCreditsPayload(BaseModel):
+    feature_type: Literal[
+        "audio_cleanup",
+        "mixing_only",
+        "mix_master",
+        "mastering_only",
+    ]
     delta: int
 
 
 @app.post("/admin/users/{user_id}/credits")
-def admin_update_user_credits(user_id: str, payload: UpdateUserCreditsPayload):
-    """Placeholder: accept credit adjustments without persisting them.
+async def admin_update_user_credits(user_id: str, payload: UpdateUserCreditsPayload):
+    """Adjust a user's credits for a specific feature type.
 
-    The current schema does not track per-user credit balances beyond the
-    plan-level credit allowance. This endpoint simply echoes the request so
-    the admin UI remains functional without requiring additional schema
-    changes.
+    This is used by the admin UI to correct balances or grant manual
+    top-ups. It reads the first matching user_credits row and updates
+    remaining_uses by the provided delta, never going below zero.
     """
 
-    return {"user_id": user_id, "delta": payload.delta}
+    try:
+        rows = await supabase_select(
+            "user_credits",
+            {
+                "user_id": f"eq.{user_id}",
+                "feature_type": f"eq.{payload.feature_type}",
+                "limit": 1,
+            },
+        )
+    except SupabaseConfigError as cfg_err:
+        raise HTTPException(status_code=500, detail=str(cfg_err)) from cfg_err
+
+    if not rows:
+        # Create a new bucket when none exists yet.
+        new_remaining = max(0, payload.delta)
+        try:
+            credit_row = await supabase_insert(
+                "user_credits",
+                {
+                    "user_id": user_id,
+                    "feature_type": payload.feature_type,
+                    "remaining_uses": new_remaining,
+                },
+            )
+        except SupabaseConfigError as cfg_err:
+            raise HTTPException(status_code=500, detail=str(cfg_err)) from cfg_err
+    else:
+        credit = rows[0]
+        remaining_raw = credit.get("remaining_uses")
+        try:
+            remaining = int(remaining_raw)
+        except (TypeError, ValueError):
+            remaining = 0
+        # Leave unlimited buckets unchanged.
+        if remaining < 0:
+            return {"user_id": user_id, "feature_type": payload.feature_type, "remaining_uses": remaining}
+
+        new_remaining = max(0, remaining + payload.delta)
+        credit_id = credit.get("id")
+        try:
+            updated_rows = await supabase_patch(
+                "user_credits",
+                {"id": f"eq.{credit_id}"},
+                {"remaining_uses": new_remaining},
+            )
+        except SupabaseConfigError as cfg_err:
+            raise HTTPException(status_code=500, detail=str(cfg_err)) from cfg_err
+        credit_row = updated_rows[0] if updated_rows else {"remaining_uses": new_remaining}
+
+    return {
+        "user_id": user_id,
+        "feature_type": payload.feature_type,
+        "remaining_uses": int(credit_row.get("remaining_uses") or 0),
+    }
 
 
 @app.get("/admin/jobs")
@@ -2449,6 +2741,17 @@ async def billing_capture(payload: CheckoutCapturePayload):
                 "provider_payment_id": payload.provider_payment_id,
             },
         )
+
+        # Best-effort: seed or refresh credits for this user based on the
+        # purchased plan. This mirrors the allowances advertised on the
+        # pricing page so the studio UI can show remaining uses.
+        if payload.user_id:
+            await _apply_plan_credits_for_user(
+                user_id=payload.user_id,
+                plan_key=plan_key,
+                feature_type=payload.feature_type,
+                quantity=payload.quantity,
+            )
     except SupabaseConfigError as cfg_err:
         raise HTTPException(status_code=500, detail=str(cfg_err)) from cfg_err
 
