@@ -56,45 +56,6 @@ SESSIONS_DIR = BASE_DIR / "sessions"
 SESSIONS_DIR.mkdir(exist_ok=True)
 
 
-async def call_dsp_step(job_id: str, step_name: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-  """Call a single DSP step on the external service.
-
-  This helper is intentionally conservative for Render's free tier:
-  - It never sends raw audio blobs, only lightweight JSON metadata.
-  - It uses short timeouts so stuck DSP calls don't block workers.
-  - It catches all network/HTTP errors and raises a controlled RuntimeError
-    which the background job runner can use to mark the job as failed.
-  """
-
-  try:
-      async with httpx.AsyncClient(timeout=15.0) as client:
-          resp = await client.post(
-              f"{DSP_BASE_URL}/step",
-              json={
-                  "job_id": job_id,
-                  "step": step_name,
-                  **payload,
-              },
-          )
-  except Exception as exc:  # pragma: no cover - defensive network handling
-      raise RuntimeError(f"DSP step '{step_name}' request failed: {exc}") from exc
-
-  if resp.status_code >= 400:
-      # Try to surface a structured error payload when possible.
-      try:
-          detail: Any = resp.json()
-      except ValueError:
-          detail = resp.text
-      raise RuntimeError(f"DSP step '{step_name}' failed: {detail}")
-
-  try:
-      data = resp.json()
-  except ValueError as exc:
-      raise RuntimeError(f"DSP step '{step_name}' returned invalid JSON: {exc}") from exc
-
-  return data
-
-
 def _save_upload(upload: UploadFile | None, dest: Path | None) -> Path | None:
     if upload is None or dest is None:
         return None
@@ -163,15 +124,6 @@ class JobStatusResponse(BaseModel):
     steps: Optional[list[StepStatus]] = None
     estimated_total_sec: Optional[float] = None
     elapsed_sec: Optional[float] = None
-
-
-class JobDetailResponse(BaseModel):
-    id: str
-    status: Literal["queued", "processing", "completed", "failed"]
-    progress: int
-    current_stage: Optional[str] = None
-    result_url: Optional[str] = None
-    error: Optional[str] = None
 
 
 # -------------------------
@@ -1126,31 +1078,6 @@ async def _run_processing_job(job_id: str, job_type: str, input_files: Dict[str,
         except Exception:
             # Analytics should never break job completion.
             pass
-
-
-async def run_processing_job(job_id: str) -> None:
-    """Background entrypoint that drives a processing job by id.
-
-    This helper makes Supabase the single source of truth for job metadata:
-    it looks up the processing_jobs row for job_id, pulls the persisted
-    input_files + job_type, and then delegates to the internal runner.
-    """
-
-    try:
-        job_row = await get_processing_job(job_id)
-    except SupabaseConfigError:
-        # If we cannot talk to Supabase there is nowhere to report errors.
-        return
-
-    if not job_row:
-        return
-
-    job_type = str(job_row.get("job_type") or "mix_master")
-    input_files = job_row.get("input_files") or {}
-    if not isinstance(input_files, dict):
-        input_files = {}
-
-    await _run_processing_job(job_id, job_type, input_files)
     except Exception as exc:  # pragma: no cover - defensive
         # Best-effort failure update so the job is not stuck forever.
         message = str(exc)
@@ -1399,11 +1326,11 @@ async def create_process_job(payload: ProcessRequest) -> JobStatusResponse:
 
     job_id = str(job_row["id"])
 
-    # Fire-and-forget background coroutine. Each worker process handles jobs
-    # sequentially, and the heavy DSP work runs outside the request/response
-    # cycle to avoid blocking /process and to keep memory usage predictable
-    # on Render's free tier.
-    asyncio.create_task(run_processing_job(job_id))
+    # Fire-and-forget background coroutine – this process should run with
+    # WEB_CONCURRENCY=1 or otherwise ensure that jobs are not duplicated.
+    asyncio.create_task(
+        _run_processing_job(job_id, payload.job_type, enriched_input_files)
+    )
 
     steps = _build_step_statuses(job_row) or []
 
@@ -1454,42 +1381,6 @@ async def get_job_status(job_id: str) -> JobStatusResponse:
         steps=steps,
         estimated_total_sec=job_row.get("estimated_total_sec"),
         elapsed_sec=elapsed_sec,
-    )
-
-
-@app.get("/jobs/{job_id}", response_model=JobDetailResponse)
-async def get_job_detail(job_id: str) -> JobDetailResponse:
-    """Return a simplified job view for the studio frontend.
-
-    This endpoint is designed for polling from the browser: it exposes just
-    enough information to drive a progress bar and show the current step,
-    while keeping Supabase as the source of truth.
-    """
-
-    try:
-        job_row = await get_processing_job(job_id)
-    except SupabaseConfigError as cfg_err:
-        raise HTTPException(status_code=500, detail=str(cfg_err)) from cfg_err
-
-    if not job_row:
-        raise HTTPException(status_code=404, detail="Job not found")
-
-    output_files = job_row.get("output_files") or {}
-    result_url: Optional[str] = None
-    if isinstance(output_files, dict):
-        result_url = (
-            output_files.get("master_url")
-            or output_files.get("master_path")
-            or output_files.get("output_url")
-        )
-
-    return JobDetailResponse(
-        id=str(job_row["id"]),
-        status=job_row.get("status", "queued"),
-        progress=job_row.get("progress", 0),
-        current_stage=job_row.get("current_stage"),
-        result_url=result_url,
-        error=job_row.get("error_message"),
     )
 
 
