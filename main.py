@@ -318,6 +318,23 @@ async def resolve_support_ticket(ticket_id: str):
 
 PresetMode = Literal["audio_cleanup", "mixing_only", "mix_and_master", "mastering_only"]
 PresetTarget = Literal["vocal", "beat", "full_mix"]
+PresetFlow = Literal["mix", "mix_master", "master"]
+PresetCategory = Literal["vocal", "full_mix", "master"]
+
+
+class DspRanges(BaseModel):
+    """Safe DSP parameter bounds for AI-assisted processing.
+
+    These ranges are interpreted by downstream DSP workers. The FastAPI
+    layer only validates and exposes them to the studio UI.
+    """
+
+    eq: Dict[str, Any] = {}
+    compression: Dict[str, Any] = {}
+    saturation: Dict[str, Any] = {}
+    deesser: Dict[str, Any] = {}
+    bus: Dict[str, Any] = {}
+    limiter: Dict[str, Any] = {}
 
 
 class StudioPreset(BaseModel):
@@ -329,6 +346,13 @@ class StudioPreset(BaseModel):
     description: str
     dsp_chain_reference: str
     tags: list[str] = []
+    # Extended metadata for production-grade, artist-inspired presets.
+    intent: Optional[str] = None
+    inspired_style: Optional[str] = None
+    target_genres: list[str] = []
+    flow: Optional[PresetFlow] = None
+    category: Optional[PresetCategory] = None
+    dsp_ranges: Optional[DspRanges] = None
 
 
 STUDIO_PRESETS: list[StudioPreset] = [
@@ -523,6 +547,313 @@ STUDIO_PRESETS: list[StudioPreset] = [
         description="Hard-hitting rap vocal with dense compression and presence.",
         dsp_chain_reference="aggressive_rap",
         tags=["Vocal", "Rap", "Aggressive"],
+        intent="Modern, punchy rap vocal that stays upfront over heavy beats.",
+        inspired_style="Compressed, saturated rap leads for contemporary street records.",
+        target_genres=["rap", "hiphop"],
+        flow="mix",
+        category="vocal",
+        dsp_ranges=DspRanges(
+            eq={
+                "low_cut_hz": [70, 100],
+                "low_mid_cut_db": [-3.0, -1.0],
+                "presence_boost_db": [2.0, 5.0],
+                "air_shelf_db": [1.0, 4.0],
+            },
+            compression={
+                "threshold_db": [-28.0, -18.0],
+                "ratio": [3.5, 5.5],
+                "attack_ms": [2.0, 10.0],
+                "release_ms": [50.0, 150.0],
+            },
+            saturation={
+                "drive_db": [3.0, 7.0],
+                "tone": [0.0, 0.4],
+            },
+            deesser={
+                "freq_hz": [6000.0, 9500.0],
+                "amount_db": [3.0, 7.0],
+            },
+            bus={
+                "glue_threshold_db": [-16.0, -10.0],
+                "glue_mix": [0.6, 0.9],
+            },
+            limiter={
+                "ceiling_db": [-1.2, -0.8],
+                "target_lufs": [-12.0, -9.0],
+            },
+        ),
+    ),
+    StudioPreset(
+        id="hiphop_modern_clean",
+        name="Hip Hop – Modern Clean",
+        mode="mixing_only",
+        target="vocal",
+        genre="hiphop",
+        description="Balanced, polished hip hop vocal tuned for radio and streaming.",
+        dsp_chain_reference="hiphop",
+        tags=["Vocal", "Hip-Hop", "Clean"],
+        intent="Radio-ready modern hip hop vocal with controlled low-end and clear top.",
+        inspired_style="Clean, commercial hip hop vocals with punch and clarity.",
+        target_genres=["hiphop", "rap"],
+        flow="mix",
+        category="vocal",
+        dsp_ranges=DspRanges(
+            eq={
+                "low_cut_hz": [70, 100],
+                "low_mid_cut_db": [-2.5, -0.5],
+                "presence_boost_db": [1.5, 4.0],
+                "air_shelf_db": [1.0, 4.0],
+            },
+            compression={
+                "threshold_db": [-26.0, -18.0],
+                "ratio": [3.0, 4.5],
+                "attack_ms": [4.0, 14.0],
+                "release_ms": [70.0, 190.0],
+            },
+            saturation={
+                "drive_db": [1.0, 4.0],
+                "tone": [-0.1, 0.3],
+            },
+            deesser={
+                "freq_hz": [6500.0, 10000.0],
+                "amount_db": [2.0, 6.0],
+            },
+            bus={
+                "glue_threshold_db": [-18.0, -12.0],
+                "glue_mix": [0.55, 0.85],
+            },
+            limiter={
+                "ceiling_db": [-1.2, -0.9],
+                "target_lufs": [-13.0, -10.0],
+            },
+        ),
+    ),
+    StudioPreset(
+        id="rap_drill_vocal",
+        name="Rap – Drill Vocal",
+        mode="mixing_only",
+        target="vocal",
+        genre="rap",
+        description="Dark, thick drill rap vocal with commanding presence.",
+        dsp_chain_reference="aggressive_rap",
+        tags=["Vocal", "Rap", "Drill"],
+        intent="Authoritative drill vocal with weighty low-mids and controlled highs.",
+        inspired_style="Modern drill vocals with dense low-mids and focused bite.",
+        target_genres=["drill", "rap"],
+        flow="mix",
+        category="vocal",
+        dsp_ranges=DspRanges(
+            eq={
+                "low_cut_hz": [60, 90],
+                "low_mid_body_db": [0.0, 2.5],
+                "harsh_cut_db": [-4.5, -1.5],
+                "air_shelf_db": [-0.5, 2.5],
+            },
+            compression={
+                "threshold_db": [-30.0, -20.0],
+                "ratio": [3.5, 5.5],
+                "attack_ms": [2.0, 10.0],
+                "release_ms": [40.0, 140.0],
+            },
+            saturation={
+                "drive_db": [3.0, 7.0],
+                "tone": [-0.2, 0.2],
+            },
+            deesser={
+                "freq_hz": [5500.0, 8500.0],
+                "amount_db": [3.0, 7.0],
+            },
+            bus={
+                "glue_threshold_db": [-16.0, -10.0],
+                "glue_mix": [0.6, 0.9],
+            },
+            limiter={
+                "ceiling_db": [-1.2, -0.8],
+                "target_lufs": [-12.0, -9.0],
+            },
+        ),
+    ),
+    # R&B – vocal polish
+    StudioPreset(
+        id="rnb_warm_intimate",
+        name="R&B – Warm & Intimate",
+        mode="mixing_only",
+        target="vocal",
+        genre="rnb",
+        description="Close, emotional R&B vocal with smooth top and gentle lows.",
+        dsp_chain_reference="rnb",
+        tags=["Vocal", "R&B", "Warm"],
+        intent="Intimate, front-of-speaker R&B vocal with rich low-mids.",
+        inspired_style="Soulful R&B ballads with warm, detailed vocal tone.",
+        target_genres=["rnb"],
+        flow="mix",
+        category="vocal",
+        dsp_ranges=DspRanges(
+            eq={
+                "low_cut_hz": [70, 100],
+                "body_boost_db": [0.5, 3.0],
+                "presence_boost_db": [0.5, 2.5],
+                "air_shelf_db": [0.5, 3.0],
+            },
+            compression={
+                "threshold_db": [-24.0, -16.0],
+                "ratio": [2.0, 3.5],
+                "attack_ms": [8.0, 22.0],
+                "release_ms": [120.0, 260.0],
+            },
+            saturation={
+                "drive_db": [0.5, 3.0],
+                "tone": [-0.2, 0.2],
+            },
+            deesser={
+                "freq_hz": [6500.0, 9500.0],
+                "amount_db": [2.0, 6.0],
+            },
+            bus={
+                "glue_threshold_db": [-18.0, -12.0],
+                "glue_mix": [0.5, 0.8],
+            },
+            limiter={
+                "ceiling_db": [-1.3, -0.9],
+                "target_lufs": [-14.0, -11.0],
+            },
+        ),
+    ),
+    StudioPreset(
+        id="rnb_modern_airy",
+        name="R&B – Modern Airy",
+        mode="mixing_only",
+        target="vocal",
+        genre="rnb",
+        description="Wide, textured modern R&B vocal with airy top.",
+        dsp_chain_reference="rnb",
+        tags=["Vocal", "R&B", "Modern"],
+        intent="Contemporary R&B vocal with width, depth and smooth air.",
+        inspired_style="Modern R&B/pop crossover vocals with glossy top end.",
+        target_genres=["rnb", "pop"],
+        flow="mix",
+        category="vocal",
+        dsp_ranges=DspRanges(
+            eq={
+                "low_cut_hz": [80, 110],
+                "low_mid_cut_db": [-2.5, -0.5],
+                "presence_boost_db": [1.5, 3.5],
+                "air_shelf_db": [2.0, 5.0],
+            },
+            compression={
+                "threshold_db": [-24.0, -16.0],
+                "ratio": [2.5, 4.0],
+                "attack_ms": [6.0, 18.0],
+                "release_ms": [90.0, 220.0],
+            },
+            saturation={
+                "drive_db": [1.0, 3.5],
+                "tone": [-0.1, 0.3],
+            },
+            deesser={
+                "freq_hz": [7000.0, 10500.0],
+                "amount_db": [3.0, 7.0],
+            },
+            bus={
+                "glue_threshold_db": [-18.0, -12.0],
+                "glue_mix": [0.55, 0.85],
+            },
+            limiter={
+                "ceiling_db": [-1.2, -0.9],
+                "target_lufs": [-13.0, -10.0],
+            },
+        ),
+    ),
+    # Reggae – roots and modern fusion
+    StudioPreset(
+        id="reggae_roots_clean",
+        name="Reggae – Roots Clean",
+        mode="mixing_only",
+        target="vocal",
+        genre="reggae",
+        description="Organic, natural reggae vocal tuned for roots and culture.",
+        dsp_chain_reference="reggae",
+        tags=["Vocal", "Reggae", "Roots"],
+        intent="Open, natural reggae vocal that respects dynamics and tone.",
+        inspired_style="Roots reggae performances with organic, un-hyped tone.",
+        target_genres=["reggae"],
+        flow="mix",
+        category="vocal",
+        dsp_ranges=DspRanges(
+            eq={
+                "low_cut_hz": [70, 100],
+                "body_boost_db": [0.0, 2.0],
+                "presence_boost_db": [0.5, 2.5],
+                "air_shelf_db": [0.0, 3.0],
+            },
+            compression={
+                "threshold_db": [-22.0, -14.0],
+                "ratio": [2.0, 3.0],
+                "attack_ms": [10.0, 24.0],
+                "release_ms": [120.0, 260.0],
+            },
+            saturation={
+                "drive_db": [0.5, 2.5],
+                "tone": [-0.2, 0.1],
+            },
+            deesser={
+                "freq_hz": [6000.0, 9000.0],
+                "amount_db": [1.5, 5.0],
+            },
+            bus={
+                "glue_threshold_db": [-18.0, -12.0],
+                "glue_mix": [0.45, 0.75],
+            },
+            limiter={
+                "ceiling_db": [-1.4, -1.0],
+                "target_lufs": [-15.0, -12.0],
+            },
+        ),
+    ),
+    StudioPreset(
+        id="reggae_modern_fusion",
+        name="Reggae – Modern Fusion",
+        mode="mixing_only",
+        target="vocal",
+        genre="reggae",
+        description="Clean, crossover-ready reggae vocal for modern fusion records.",
+        dsp_chain_reference="reggae",
+        tags=["Vocal", "Reggae", "Modern"],
+        intent="Fusion-friendly reggae vocal that fits alongside pop and dancehall.",
+        inspired_style="Modern reggae/pop crossovers with clean, controlled vocals.",
+        target_genres=["reggae", "pop", "dancehall"],
+        flow="mix",
+        category="vocal",
+        dsp_ranges=DspRanges(
+            eq={
+                "low_cut_hz": [80, 110],
+                "low_mid_cut_db": [-2.5, -0.5],
+                "presence_boost_db": [1.5, 3.5],
+                "air_shelf_db": [1.0, 4.0],
+            },
+            compression={
+                "threshold_db": [-24.0, -16.0],
+                "ratio": [2.5, 4.0],
+                "attack_ms": [6.0, 18.0],
+                "release_ms": [90.0, 220.0],
+            },
+            saturation={
+                "drive_db": [1.0, 3.5],
+                "tone": [-0.1, 0.3],
+            },
+            deesser={
+                "freq_hz": [6500.0, 10000.0],
+                "amount_db": [2.0, 6.0],
+            },
+            bus={
+                "glue_threshold_db": [-18.0, -12.0],
+                "glue_mix": [0.55, 0.85],
+            },
+            limiter={
+                "ceiling_db": [-1.2, -0.9],
+                "target_lufs": [-13.0, -10.0],
+            },
+        ),
     ),
     StudioPreset(
         id="trap_dh_lead_air",
@@ -552,6 +883,183 @@ STUDIO_PRESETS: list[StudioPreset] = [
         description="Polished pop vocal with clean top and tight lows.",
         dsp_chain_reference="clean_vocal",
         tags=["Vocal", "Pop", "Clean"],
+    ),
+
+    # -----------------
+    # Dancehall – artist-inspired vocal & mix presets
+    # -----------------
+    StudioPreset(
+        id="dancehall_raw_street_male",
+        name="Dancehall – Raw Street (Male)",
+        mode="mixing_only",
+        target="vocal",
+        genre="dancehall",
+        description="Gritty, mid-forward dancehall vocal tuned for raw street records.",
+        dsp_chain_reference="dancehall",
+        tags=["Vocal", "Dancehall", "Raw"],
+        intent="Hard-hitting, aggressive male lead for street-oriented dancehall.",
+        inspired_style="Gritty, compressed, mid-forward club and street singles.",
+        target_genres=["dancehall"],
+        flow="mix",
+        category="vocal",
+        dsp_ranges=DspRanges(
+            eq={
+                "low_cut_hz": [70, 110],
+                "mud_cut_db": [-4.0, -1.0],
+                "presence_boost_db": [2.0, 5.0],
+                "air_shelf_db": [0.0, 3.0],
+            },
+            compression={
+                "threshold_db": [-28.0, -18.0],
+                "ratio": [3.0, 5.0],
+                "attack_ms": [3.0, 12.0],
+                "release_ms": [40.0, 160.0],
+            },
+            saturation={
+                "drive_db": [2.0, 6.0],
+                "tone": [-0.1, 0.3],
+            },
+            deesser={
+                "freq_hz": [5500.0, 8500.0],
+                "amount_db": [3.0, 7.0],
+            },
+            bus={
+                "glue_threshold_db": [-14.0, -9.0],
+                "glue_mix": [0.6, 0.9],
+            },
+            limiter={
+                "ceiling_db": [-1.2, -0.8],
+                "target_lufs": [-12.0, -9.0],
+            },
+        ),
+    ),
+    StudioPreset(
+        id="dancehall_clean_modern_male",
+        name="Dancehall – Clean Modern (Male)",
+        mode="mixing_only",
+        target="vocal",
+        genre="dancehall",
+        description="Polished, wide male vocal for melodic and crossover dancehall.",
+        dsp_chain_reference="dancehall",
+        tags=["Vocal", "Dancehall", "Modern"],
+        intent="Clear, controlled male lead that translates from earbuds to clubs.",
+        inspired_style="Polished crossover dancehall with smooth top and tight lows.",
+        target_genres=["dancehall", "pop"],
+        flow="mix",
+        category="vocal",
+        dsp_ranges=DspRanges(
+            eq={
+                "low_cut_hz": [70, 100],
+                "low_shelf_db": [-2.0, 0.0],
+                "presence_boost_db": [1.5, 3.5],
+                "air_shelf_db": [1.0, 4.0],
+            },
+            compression={
+                "threshold_db": [-24.0, -16.0],
+                "ratio": [2.5, 4.0],
+                "attack_ms": [5.0, 18.0],
+                "release_ms": [80.0, 200.0],
+            },
+            saturation={
+                "drive_db": [0.5, 3.5],
+                "tone": [-0.1, 0.2],
+            },
+            deesser={
+                "freq_hz": [6000.0, 9000.0],
+                "amount_db": [2.0, 6.0],
+            },
+            bus={
+                "glue_threshold_db": [-16.0, -10.0],
+                "glue_mix": [0.55, 0.8],
+            },
+            limiter={
+                "ceiling_db": [-1.2, -0.9],
+                "target_lufs": [-13.5, -10.5],
+            },
+        ),
+    ),
+    StudioPreset(
+        id="dancehall_female_power",
+        name="Dancehall – Female Power",
+        mode="mixing_only",
+        target="vocal",
+        genre="dancehall",
+        description="Bright, confident female vocal tuned for radio and playlists.",
+        dsp_chain_reference="dancehall",
+        tags=["Vocal", "Dancehall", "Female"],
+        intent="Forward, confident female vocal that stays on top of heavy beats.",
+        inspired_style="Bright, modern female dancehall leads with controlled bite.",
+        target_genres=["dancehall", "pop"],
+        flow="mix",
+        category="vocal",
+        dsp_ranges=DspRanges(
+            eq={
+                "low_cut_hz": [80, 120],
+                "body_boost_db": [0.0, 2.0],
+                "presence_boost_db": [2.0, 4.5],
+                "air_shelf_db": [2.0, 5.0],
+            },
+            compression={
+                "threshold_db": [-26.0, -18.0],
+                "ratio": [3.0, 4.5],
+                "attack_ms": [4.0, 14.0],
+                "release_ms": [70.0, 180.0],
+            },
+            saturation={
+                "drive_db": [1.0, 4.0],
+                "tone": [0.0, 0.3],
+            },
+            deesser={
+                "freq_hz": [6500.0, 10000.0],
+                "amount_db": [3.0, 8.0],
+            },
+            bus={
+                "glue_threshold_db": [-16.0, -10.0],
+                "glue_mix": [0.6, 0.85],
+            },
+            limiter={
+                "ceiling_db": [-1.2, -0.9],
+                "target_lufs": [-13.0, -10.0],
+            },
+        ),
+    ),
+    StudioPreset(
+        id="dancehall_club_mix",
+        name="Dancehall – Club Mix",
+        mode="mix_and_master",
+        target="full_mix",
+        genre="dancehall",
+        description="Bass-heavy, punchy full mix tuned for club systems.",
+        dsp_chain_reference="streaming_master",
+        tags=["Full Mix", "Dancehall", "Club"],
+        intent="Finished club mix with strong low-end and vocal-forward balance.",
+        inspired_style="Loud, sub-focused dancehall mixes that hit in the club.",
+        target_genres=["dancehall"],
+        flow="mix_master",
+        category="full_mix",
+        dsp_ranges=DspRanges(
+            eq={
+                "low_shelf_db": [1.0, 3.5],
+                "low_mid_cut_db": [-3.0, -0.5],
+                "presence_boost_db": [1.0, 3.0],
+            },
+            compression={
+                "bus_ratio": [2.0, 3.0],
+                "bus_threshold_db": [-16.0, -10.0],
+            },
+            saturation={
+                "bus_drive_db": [0.5, 3.0],
+            },
+            deesser={},
+            bus={
+                "glue_threshold_db": [-14.0, -9.0],
+                "glue_mix": [0.6, 0.9],
+            },
+            limiter={
+                "ceiling_db": [-1.1, -0.8],
+                "target_lufs": [-10.0, -7.5],
+            },
+        ),
     ),
 
     # Mixing only – beat only
@@ -646,6 +1154,136 @@ STUDIO_PRESETS: list[StudioPreset] = [
         tags=["Beat", "Afrobeat", "Club"],
     ),
 
+    # Trap Dancehall – vocal & beat masters
+    StudioPreset(
+        id="trap_dh_dark_drill",
+        name="Trap Dancehall – Dark Drill",
+        mode="mixing_only",
+        target="vocal",
+        genre="trap_dancehall",
+        description="Dark, dense vocal mix for drill-influenced trap dancehall.",
+        dsp_chain_reference="trap_dancehall",
+        tags=["Vocal", "Trap", "Drill"],
+        intent="Aggressive, low-mid heavy vocal that rides dark drill beats.",
+        inspired_style="Compressed, shadowy drill vocals with controlled high end.",
+        target_genres=["trap_dancehall", "drill"],
+        flow="mix",
+        category="vocal",
+        dsp_ranges=DspRanges(
+            eq={
+                "low_cut_hz": [60, 90],
+                "low_mid_body_db": [0.0, 2.5],
+                "harsh_cut_db": [-5.0, -2.0],
+                "air_shelf_db": [-1.0, 2.0],
+            },
+            compression={
+                "threshold_db": [-30.0, -20.0],
+                "ratio": [3.5, 5.0],
+                "attack_ms": [2.0, 10.0],
+                "release_ms": [40.0, 150.0],
+            },
+            saturation={
+                "drive_db": [3.0, 7.0],
+                "tone": [-0.2, 0.1],
+            },
+            deesser={
+                "freq_hz": [5500.0, 8000.0],
+                "amount_db": [3.0, 7.0],
+            },
+            bus={
+                "glue_threshold_db": [-15.0, -10.0],
+                "glue_mix": [0.65, 0.9],
+            },
+            limiter={
+                "ceiling_db": [-1.2, -0.8],
+                "target_lufs": [-11.5, -9.0],
+            },
+        ),
+    ),
+    StudioPreset(
+        id="trap_dh_energy_lead",
+        name="Trap Dancehall – Energy Lead",
+        mode="mixing_only",
+        target="vocal",
+        genre="trap_dancehall",
+        description="Distorted, intense lead vocal designed to cut through loud beats.",
+        dsp_chain_reference="aggressive_rap",
+        tags=["Vocal", "Trap", "Energy"],
+        intent="In-your-face lead with obvious saturation and fast compression.",
+        inspired_style="Hyped trap-dancehall leads with clipped, modern attitude.",
+        target_genres=["trap_dancehall", "trap"],
+        flow="mix",
+        category="vocal",
+        dsp_ranges=DspRanges(
+            eq={
+                "low_cut_hz": [70, 110],
+                "mid_cut_db": [-3.0, 0.0],
+                "presence_boost_db": [3.0, 6.0],
+                "air_shelf_db": [1.0, 4.0],
+            },
+            compression={
+                "threshold_db": [-28.0, -18.0],
+                "ratio": [3.5, 6.0],
+                "attack_ms": [1.0, 8.0],
+                "release_ms": [40.0, 120.0],
+            },
+            saturation={
+                "drive_db": [4.0, 8.0],
+                "tone": [0.0, 0.4],
+            },
+            deesser={
+                "freq_hz": [6000.0, 9500.0],
+                "amount_db": [3.0, 8.0],
+            },
+            bus={
+                "glue_threshold_db": [-14.0, -9.0],
+                "glue_mix": [0.6, 0.9],
+            },
+            limiter={
+                "ceiling_db": [-1.0, -0.8],
+                "target_lufs": [-10.5, -8.0],
+            },
+        ),
+    ),
+    StudioPreset(
+        id="trap_dh_beat_master",
+        name="Trap Dancehall – Beat Master",
+        mode="mastering_only",
+        target="beat",
+        genre="trap_dancehall",
+        description="Loud, sub-focused beat master tuned for modern trap dancehall.",
+        dsp_chain_reference="streaming_master",
+        tags=["Master", "Beat", "Trap"],
+        intent="Club-ready beat master with tight subs and crisp top.",
+        inspired_style="Streaming-competitive trap dancehall beats with heavy low-end.",
+        target_genres=["trap_dancehall", "trap"],
+        flow="master",
+        category="master",
+        dsp_ranges=DspRanges(
+            eq={
+                "low_shelf_db": [1.5, 4.0],
+                "low_mid_cut_db": [-3.5, -0.5],
+                "air_shelf_db": [0.5, 3.0],
+            },
+            compression={
+                "bus_ratio": [2.0, 3.0],
+                "bus_threshold_db": [-18.0, -12.0],
+            },
+            saturation={
+                "bus_drive_db": [0.5, 3.5],
+            },
+            deesser={},
+            bus={
+                "glue_threshold_db": [-16.0, -10.0],
+                "glue_mix": [0.6, 0.9],
+            },
+            limiter={
+                "ceiling_db": [-1.0, -0.7],
+                "target_lufs": [-9.5, -7.0],
+            },
+        ),
+    ),
+
     # Mix + master – full mix bus
     StudioPreset(
         id="radio_ready_mix",
@@ -736,6 +1374,143 @@ STUDIO_PRESETS: list[StudioPreset] = [
         description="Designed for hip-hop, trap and dancehall mixes that need extra punch.",
         dsp_chain_reference="streaming_master",
         tags=["Full Mix", "Urban", "Punchy"],
+    ),
+
+    # Afrobeats – vocal flavours
+    StudioPreset(
+        id="afrobeats_smooth_lead",
+        name="Afrobeats – Smooth Lead",
+        mode="mixing_only",
+        target="vocal",
+        genre="afrobeat",
+        description="Warm, expressive afrobeats lead vocal with natural top end.",
+        dsp_chain_reference="afrobeat",
+        tags=["Vocal", "Afrobeat", "Warm"],
+        intent="Expressive, natural lead that stays musical over groove-heavy beats.",
+        inspired_style="Organic afrobeats leads with smooth highs and controlled lows.",
+        target_genres=["afrobeat"],
+        flow="mix",
+        category="vocal",
+        dsp_ranges=DspRanges(
+            eq={
+                "low_cut_hz": [70, 100],
+                "low_mid_body_db": [0.0, 2.0],
+                "presence_boost_db": [1.0, 3.0],
+                "air_shelf_db": [0.5, 3.0],
+            },
+            compression={
+                "threshold_db": [-24.0, -16.0],
+                "ratio": [2.0, 3.5],
+                "attack_ms": [8.0, 20.0],
+                "release_ms": [100.0, 260.0],
+            },
+            saturation={
+                "drive_db": [0.5, 3.0],
+                "tone": [-0.1, 0.2],
+            },
+            deesser={
+                "freq_hz": [6000.0, 9000.0],
+                "amount_db": [2.0, 6.0],
+            },
+            bus={
+                "glue_threshold_db": [-18.0, -12.0],
+                "glue_mix": [0.5, 0.8],
+            },
+            limiter={
+                "ceiling_db": [-1.3, -0.9],
+                "target_lufs": [-14.0, -11.0],
+            },
+        ),
+    ),
+    StudioPreset(
+        id="afrobeats_bright_pop",
+        name="Afrobeats – Bright Pop",
+        mode="mixing_only",
+        target="vocal",
+        genre="afrobeat",
+        description="Airy, commercial afrobeats vocal tuned for playlists.",
+        dsp_chain_reference="afrobeat",
+        tags=["Vocal", "Afrobeat", "Pop"],
+        intent="Radio and playlist-ready afrobeats vocal with polished top end.",
+        inspired_style="Clean, pop-leaning afrobeats with wide, glossy vocals.",
+        target_genres=["afrobeat", "pop"],
+        flow="mix",
+        category="vocal",
+        dsp_ranges=DspRanges(
+            eq={
+                "low_cut_hz": [80, 110],
+                "low_mid_cut_db": [-3.0, -1.0],
+                "presence_boost_db": [2.0, 4.0],
+                "air_shelf_db": [2.0, 5.0],
+            },
+            compression={
+                "threshold_db": [-26.0, -18.0],
+                "ratio": [2.5, 4.0],
+                "attack_ms": [6.0, 18.0],
+                "release_ms": [80.0, 200.0],
+            },
+            saturation={
+                "drive_db": [1.0, 3.5],
+                "tone": [0.0, 0.3],
+            },
+            deesser={
+                "freq_hz": [6500.0, 10000.0],
+                "amount_db": [3.0, 7.0],
+            },
+            bus={
+                "glue_threshold_db": [-18.0, -12.0],
+                "glue_mix": [0.55, 0.85],
+            },
+            limiter={
+                "ceiling_db": [-1.2, -0.9],
+                "target_lufs": [-13.0, -10.0],
+            },
+        ),
+    ),
+    StudioPreset(
+        id="afrobeats_female_soul",
+        name="Afrobeats – Female Soul",
+        mode="mixing_only",
+        target="vocal",
+        genre="afrobeat",
+        description="Intimate, warm female vocal for soulful afrobeats.",
+        dsp_chain_reference="afrobeat",
+        tags=["Vocal", "Afrobeat", "Female"],
+        intent="Close, emotional female vocal that still sits clearly in the mix.",
+        inspired_style="Soulful afrobeats ballads with warm, detailed vocals.",
+        target_genres=["afrobeat", "rnb"],
+        flow="mix",
+        category="vocal",
+        dsp_ranges=DspRanges(
+            eq={
+                "low_cut_hz": [70, 100],
+                "body_boost_db": [0.0, 2.5],
+                "presence_boost_db": [1.0, 3.0],
+                "air_shelf_db": [1.0, 4.0],
+            },
+            compression={
+                "threshold_db": [-24.0, -16.0],
+                "ratio": [2.0, 3.5],
+                "attack_ms": [8.0, 22.0],
+                "release_ms": [120.0, 260.0],
+            },
+            saturation={
+                "drive_db": [0.5, 3.0],
+                "tone": [-0.1, 0.2],
+            },
+            deesser={
+                "freq_hz": [6500.0, 9500.0],
+                "amount_db": [2.0, 6.0],
+            },
+            bus={
+                "glue_threshold_db": [-18.0, -12.0],
+                "glue_mix": [0.5, 0.8],
+            },
+            limiter={
+                "ceiling_db": [-1.3, -0.9],
+                "target_lufs": [-14.0, -11.0],
+            },
+        ),
     ),
 
     # Mastering only
