@@ -26,7 +26,6 @@ from supabase_client import (
     SupabaseConfigError,
 )
 from progress import update_progress, mark_job_complete, mark_job_failed
-from preset_registry import list_presets as registry_list_presets
 
 app = FastAPI(title="RiddimBase Studio Backend")
 
@@ -130,22 +129,6 @@ class JobStatusResponse(BaseModel):
     queue_feature_type: Optional[str] = None
     queue_position: Optional[int] = None
     queue_size: Optional[int] = None
-
-
-class RegistryPreset(BaseModel):
-    """Public schema for entries in the central preset registry.
-
-    This is intentionally thin and JSON-friendly so the Studio UI and
-    DSP workers can share the same high-level intent and safe ranges.
-    """
-
-    id: str
-    flow: Literal["cleanup", "mix", "mix_master", "master"]
-    category: Literal["vocal", "full_mix", "master"]
-    name: str
-    intent: str
-    target_genres: list[str]
-    dsp_ranges: Dict[str, Any]
 
 
 # -------------------------
@@ -1047,28 +1030,6 @@ async def list_studio_presets(mode: Optional[PresetMode] = None) -> list[StudioP
     return [p for p in STUDIO_PRESETS if p.mode == mode]
 
 
-@app.get("/studio/preset-registry", response_model=list[RegistryPreset])
-async def list_preset_registry(flow: Optional[str] = None) -> list[RegistryPreset]:
-    """Expose the central preset registry to the Studio UI and DSP.
-
-    The ``flow`` parameter uses the high-level labels from the
-    architecture spec: "cleanup" | "mix" | "mix_master" | "master".
-    When omitted, all presets are returned.
-    """
-
-    # Validate and normalise flow without being overly strict so that
-    # the UI can pass through its own labels.
-    valid_flows = {"cleanup", "mix", "mix_master", "master"}
-    selected_flow: Optional[str]
-    if flow in valid_flows:
-        selected_flow = flow
-    else:
-        selected_flow = None
-
-    raw_items = registry_list_presets(selected_flow)  # type: ignore[arg-type]
-    return [RegistryPreset(**item) for item in raw_items]
-
-
 # -------------------------
 # Billing & plan models
 # -------------------------
@@ -1785,9 +1746,6 @@ async def proxy_dsp_process(
     reference_profile: Optional[str] = Form(None),
     session_key: Optional[str] = Form(None),
     session_scale: Optional[str] = Form(None),
-    macro_air: Optional[float] = Form(None),
-    macro_punch: Optional[float] = Form(None),
-    macro_warmth: Optional[float] = Form(None),
 ) -> JSONResponse:
     """Proxy the studio's multipart /process call to the external DSP service.
 
@@ -1814,16 +1772,6 @@ async def proxy_dsp_process(
         data["session_key"] = session_key
     if session_scale is not None:
         data["session_scale"] = session_scale
-    # High-level user macro controls that steer the DSP intensity
-    # within the preset's safe ranges. These are expressed on a
-    # normalised 0-1 scale so the DSP service can map them to
-    # concrete parameters using the central preset registry.
-    if macro_air is not None:
-        data["macro_air"] = str(macro_air)
-    if macro_punch is not None:
-        data["macro_punch"] = str(macro_punch)
-    if macro_warmth is not None:
-        data["macro_warmth"] = str(macro_warmth)
 
     # Read uploaded file contents and forward to DSP
     file_bytes = await file.read()
