@@ -20,17 +20,38 @@ def run(cmd: str) -> None:
 
 
 def ai_mix(vocal_path: str, beat_path: str, output_path: str) -> str:
+    """Mix vocal and beat using sidechain-based space creation and mix-bus glue.
+
+    This is a ffmpeg approximation of the MIXING_ONLY_FLOW_DSP / MIX_AND_MASTER
+    specs: vocal EQ+compression+parallel chain, beat EQ + sidechain ducking
+    from the vocal bus, and gentle mix-bus compression.
+    """
+
     os.makedirs("temp", exist_ok=True)
 
-    run(f'ffmpeg -i {vocal_path} -af "highpass=f=80, lowpass=f=16000" temp/vocal_clean.wav')
-    run(f'ffmpeg -i temp/vocal_clean.wav -af "acompressor=threshold=-18dB:ratio=3" temp/vocal_comp.wav')
-    run(f'ffmpeg -i temp/vocal_comp.wav -af "equalizer=f=7000:t=q:w=1:g=-4" temp/vocal_final.wav')
-    run(f'ffmpeg -i {beat_path} -af "volume=0.8" temp/beat_ready.wav')
-
-    run(
-        f'ffmpeg -i temp/beat_ready.wav -i temp/vocal_final.wav '
-        f'-filter_complex "amix=inputs=2" {output_path}'
+    cmd = (
+        f'ffmpeg -y -i "{beat_path}" -i "{vocal_path}" '
+        '-filter_complex "'
+        # Vocal foreground chain: EQ, then parallel compression
+        '[1:a]highpass=f=85,'
+        'equalizer=f=280:t=q:w=1.2:g=-2,'
+        'equalizer=f=3200:t=q:w=1.0:g=3,'
+        'equalizer=f=12000:t=q:w=1.2:g=2,'
+        'asplit=2[vdry][vpar];'
+        '[vpar]acompressor=threshold=-24dB:ratio=6:attack=5:release=50[vcomp];'
+        '[vdry][vcomp]amix=inputs=2:weights=0.8 0.2[vocal];'
+        # Beat EQ for space plus broadband sidechain compression keyed by vocal
+        '[0:a]equalizer=f=250:t=q:w=1.2:g=-3,'
+        'equalizer=f=3500:t=q:w=1.4:g=-3[beat];'
+        '[beat][vocal]sidechaincompress='
+        'threshold=-24dB:ratio=3:attack=10:release=120[beat_sc][v];'
+        # Sum beat and vocal, then apply gentle mix-bus glue compression
+        '[beat_sc][v]amix=inputs=2:weights=1 1[mix];'
+        '[mix]acompressor=threshold=-18dB:ratio=2:attack=40:release=150[out]" '
+        f'-map "[out]" -c:a pcm_s16le "{output_path}"'
     )
+
+    run(cmd)
     return output_path
 
 
