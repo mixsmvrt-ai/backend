@@ -333,6 +333,7 @@ class DspRanges(BaseModel):
     compression: Dict[str, Any] = {}
     saturation: Dict[str, Any] = {}
     deesser: Dict[str, Any] = {}
+    stereo: Dict[str, Any] = {}
     bus: Dict[str, Any] = {}
     limiter: Dict[str, Any] = {}
 
@@ -554,32 +555,35 @@ STUDIO_PRESETS: list[StudioPreset] = [
         category="vocal",
         dsp_ranges=DspRanges(
             eq={
-                "low_cut_hz": [70, 100],
+                "hpf_hz": [70.0, 100.0],
                 "low_mid_cut_db": [-3.0, -1.0],
-                "presence_boost_db": [2.0, 5.0],
-                "air_shelf_db": [1.0, 4.0],
+                "low_mid_cut_hz": [250.0, 400.0],
+                "presence_boost_db": [2.0, 4.5],
+                "presence_boost_hz": [2500.0, 4500.0],
+                "air_db": [1.0, 3.0],
+                "air_hz": [10000.0, 14000.0],
             },
             compression={
-                "threshold_db": [-28.0, -18.0],
                 "ratio": [3.5, 5.5],
                 "attack_ms": [2.0, 10.0],
                 "release_ms": [50.0, 150.0],
+                "gain_reduction_db": [5.0, 8.0],
             },
             saturation={
-                "drive_db": [3.0, 7.0],
-                "tone": [0.0, 0.4],
+                "drive_percent": [10.0, 18.0],
             },
             deesser={
                 "freq_hz": [6000.0, 9500.0],
-                "amount_db": [3.0, 7.0],
+                "reduction_db": [3.0, 7.0],
             },
-            bus={
-                "glue_threshold_db": [-16.0, -10.0],
-                "glue_mix": [0.6, 0.9],
+            stereo={
+                "width_percent": [102.0, 110.0],
+                "low_mono_blend_percent": [5.0, 15.0],
             },
             limiter={
                 "ceiling_db": [-1.2, -0.8],
-                "target_lufs": [-12.0, -9.0],
+                "release_ms": [80.0, 200.0],
+                "target_lufs": [-11.5, -9.0],
             },
         ),
     ),
@@ -599,32 +603,35 @@ STUDIO_PRESETS: list[StudioPreset] = [
         category="vocal",
         dsp_ranges=DspRanges(
             eq={
-                "low_cut_hz": [70, 100],
+                "hpf_hz": [70.0, 100.0],
                 "low_mid_cut_db": [-2.5, -0.5],
-                "presence_boost_db": [1.5, 4.0],
-                "air_shelf_db": [1.0, 4.0],
+                "low_mid_cut_hz": [220.0, 350.0],
+                "presence_boost_db": [1.5, 3.5],
+                "presence_boost_hz": [2500.0, 4500.0],
+                "air_db": [1.0, 3.0],
+                "air_hz": [11000.0, 15000.0],
             },
             compression={
-                "threshold_db": [-26.0, -18.0],
-                "ratio": [3.0, 4.5],
+                "ratio": [3.0, 4.0],
                 "attack_ms": [4.0, 14.0],
                 "release_ms": [70.0, 190.0],
+                "gain_reduction_db": [3.0, 6.0],
             },
             saturation={
-                "drive_db": [1.0, 4.0],
-                "tone": [-0.1, 0.3],
+                "drive_percent": [6.0, 12.0],
             },
             deesser={
                 "freq_hz": [6500.0, 10000.0],
-                "amount_db": [2.0, 6.0],
+                "reduction_db": [2.0, 6.0],
             },
-            bus={
-                "glue_threshold_db": [-18.0, -12.0],
-                "glue_mix": [0.55, 0.85],
+            stereo={
+                "width_percent": [103.0, 113.0],
+                "low_mono_blend_percent": [5.0, 15.0],
             },
             limiter={
                 "ceiling_db": [-1.2, -0.9],
-                "target_lufs": [-13.0, -10.0],
+                "release_ms": [90.0, 220.0],
+                "target_lufs": [-12.5, -10.0],
             },
         ),
     ),
@@ -644,32 +651,35 @@ STUDIO_PRESETS: list[StudioPreset] = [
         category="vocal",
         dsp_ranges=DspRanges(
             eq={
-                "low_cut_hz": [60, 90],
+                "hpf_hz": [60.0, 90.0],
                 "low_mid_body_db": [0.0, 2.5],
+                "low_mid_body_hz": [180.0, 320.0],
                 "harsh_cut_db": [-4.5, -1.5],
-                "air_shelf_db": [-0.5, 2.5],
+                "harsh_cut_hz": [2800.0, 4800.0],
+                "air_db": [-0.5, 2.0],
+                "air_hz": [9000.0, 13000.0],
             },
             compression={
-                "threshold_db": [-30.0, -20.0],
                 "ratio": [3.5, 5.5],
                 "attack_ms": [2.0, 10.0],
                 "release_ms": [40.0, 140.0],
+                "gain_reduction_db": [5.0, 8.0],
             },
             saturation={
-                "drive_db": [3.0, 7.0],
-                "tone": [-0.2, 0.2],
+                "drive_percent": [10.0, 18.0],
             },
             deesser={
                 "freq_hz": [5500.0, 8500.0],
-                "amount_db": [3.0, 7.0],
+                "reduction_db": [3.0, 7.0],
             },
-            bus={
-                "glue_threshold_db": [-16.0, -10.0],
-                "glue_mix": [0.6, 0.9],
+            stereo={
+                "width_percent": [101.0, 108.0],
+                "low_mono_blend_percent": [10.0, 20.0],
             },
             limiter={
                 "ceiling_db": [-1.2, -0.8],
-                "target_lufs": [-12.0, -9.0],
+                "release_ms": [80.0, 200.0],
+                "target_lufs": [-11.5, -9.0],
             },
         ),
     ),
@@ -690,31 +700,34 @@ STUDIO_PRESETS: list[StudioPreset] = [
         category="vocal",
         dsp_ranges=DspRanges(
             eq={
-                "low_cut_hz": [70, 100],
+                "hpf_hz": [70.0, 100.0],
                 "body_boost_db": [0.5, 3.0],
+                "body_boost_hz": [180.0, 280.0],
                 "presence_boost_db": [0.5, 2.5],
-                "air_shelf_db": [0.5, 3.0],
+                "presence_boost_hz": [2500.0, 4200.0],
+                "air_db": [0.5, 3.0],
+                "air_hz": [9000.0, 13000.0],
             },
             compression={
-                "threshold_db": [-24.0, -16.0],
-                "ratio": [2.0, 3.5],
+                "ratio": [2.0, 3.0],
                 "attack_ms": [8.0, 22.0],
                 "release_ms": [120.0, 260.0],
+                "gain_reduction_db": [3.0, 5.0],
             },
             saturation={
-                "drive_db": [0.5, 3.0],
-                "tone": [-0.2, 0.2],
+                "drive_percent": [4.0, 9.0],
             },
             deesser={
                 "freq_hz": [6500.0, 9500.0],
-                "amount_db": [2.0, 6.0],
+                "reduction_db": [2.0, 5.0],
             },
-            bus={
-                "glue_threshold_db": [-18.0, -12.0],
-                "glue_mix": [0.5, 0.8],
+            stereo={
+                "width_percent": [102.0, 112.0],
+                "low_mono_blend_percent": [5.0, 15.0],
             },
             limiter={
                 "ceiling_db": [-1.3, -0.9],
+                "release_ms": [120.0, 260.0],
                 "target_lufs": [-14.0, -11.0],
             },
         ),
@@ -735,31 +748,34 @@ STUDIO_PRESETS: list[StudioPreset] = [
         category="vocal",
         dsp_ranges=DspRanges(
             eq={
-                "low_cut_hz": [80, 110],
+                "hpf_hz": [80.0, 110.0],
                 "low_mid_cut_db": [-2.5, -0.5],
+                "low_mid_cut_hz": [220.0, 350.0],
                 "presence_boost_db": [1.5, 3.5],
-                "air_shelf_db": [2.0, 5.0],
+                "presence_boost_hz": [3000.0, 5000.0],
+                "air_db": [2.0, 5.0],
+                "air_hz": [11000.0, 16000.0],
             },
             compression={
-                "threshold_db": [-24.0, -16.0],
                 "ratio": [2.5, 4.0],
                 "attack_ms": [6.0, 18.0],
                 "release_ms": [90.0, 220.0],
+                "gain_reduction_db": [3.0, 6.0],
             },
             saturation={
-                "drive_db": [1.0, 3.5],
-                "tone": [-0.1, 0.3],
+                "drive_percent": [4.0, 9.0],
             },
             deesser={
                 "freq_hz": [7000.0, 10500.0],
-                "amount_db": [3.0, 7.0],
+                "reduction_db": [3.0, 7.0],
             },
-            bus={
-                "glue_threshold_db": [-18.0, -12.0],
-                "glue_mix": [0.55, 0.85],
+            stereo={
+                "width_percent": [106.0, 118.0],
+                "low_mono_blend_percent": [5.0, 15.0],
             },
             limiter={
                 "ceiling_db": [-1.2, -0.9],
+                "release_ms": [100.0, 220.0],
                 "target_lufs": [-13.0, -10.0],
             },
         ),
@@ -781,31 +797,34 @@ STUDIO_PRESETS: list[StudioPreset] = [
         category="vocal",
         dsp_ranges=DspRanges(
             eq={
-                "low_cut_hz": [70, 100],
+                "hpf_hz": [70.0, 100.0],
                 "body_boost_db": [0.0, 2.0],
+                "body_boost_hz": [180.0, 260.0],
                 "presence_boost_db": [0.5, 2.5],
-                "air_shelf_db": [0.0, 3.0],
+                "presence_boost_hz": [2500.0, 4200.0],
+                "air_db": [0.0, 3.0],
+                "air_hz": [9000.0, 13000.0],
             },
             compression={
-                "threshold_db": [-22.0, -14.0],
                 "ratio": [2.0, 3.0],
                 "attack_ms": [10.0, 24.0],
                 "release_ms": [120.0, 260.0],
+                "gain_reduction_db": [2.0, 4.0],
             },
             saturation={
-                "drive_db": [0.5, 2.5],
-                "tone": [-0.2, 0.1],
+                "drive_percent": [3.0, 7.0],
             },
             deesser={
                 "freq_hz": [6000.0, 9000.0],
-                "amount_db": [1.5, 5.0],
+                "reduction_db": [1.5, 5.0],
             },
-            bus={
-                "glue_threshold_db": [-18.0, -12.0],
-                "glue_mix": [0.45, 0.75],
+            stereo={
+                "width_percent": [100.0, 106.0],
+                "low_mono_blend_percent": [10.0, 25.0],
             },
             limiter={
                 "ceiling_db": [-1.4, -1.0],
+                "release_ms": [140.0, 280.0],
                 "target_lufs": [-15.0, -12.0],
             },
         ),
@@ -826,31 +845,34 @@ STUDIO_PRESETS: list[StudioPreset] = [
         category="vocal",
         dsp_ranges=DspRanges(
             eq={
-                "low_cut_hz": [80, 110],
+                "hpf_hz": [80.0, 110.0],
                 "low_mid_cut_db": [-2.5, -0.5],
+                "low_mid_cut_hz": [220.0, 350.0],
                 "presence_boost_db": [1.5, 3.5],
-                "air_shelf_db": [1.0, 4.0],
+                "presence_boost_hz": [2800.0, 4800.0],
+                "air_db": [1.0, 4.0],
+                "air_hz": [10000.0, 15000.0],
             },
             compression={
-                "threshold_db": [-24.0, -16.0],
                 "ratio": [2.5, 4.0],
                 "attack_ms": [6.0, 18.0],
                 "release_ms": [90.0, 220.0],
+                "gain_reduction_db": [3.0, 6.0],
             },
             saturation={
-                "drive_db": [1.0, 3.5],
-                "tone": [-0.1, 0.3],
+                "drive_percent": [4.0, 9.0],
             },
             deesser={
                 "freq_hz": [6500.0, 10000.0],
-                "amount_db": [2.0, 6.0],
+                "reduction_db": [2.0, 6.0],
             },
-            bus={
-                "glue_threshold_db": [-18.0, -12.0],
-                "glue_mix": [0.55, 0.85],
+            stereo={
+                "width_percent": [103.0, 113.0],
+                "low_mono_blend_percent": [10.0, 22.0],
             },
             limiter={
                 "ceiling_db": [-1.2, -0.9],
+                "release_ms": [110.0, 240.0],
                 "target_lufs": [-13.0, -10.0],
             },
         ),
@@ -904,32 +926,35 @@ STUDIO_PRESETS: list[StudioPreset] = [
         category="vocal",
         dsp_ranges=DspRanges(
             eq={
-                "low_cut_hz": [70, 110],
-                "mud_cut_db": [-4.0, -1.0],
-                "presence_boost_db": [2.0, 5.0],
-                "air_shelf_db": [0.0, 3.0],
+                "hpf_hz": [80.0, 100.0],
+                "low_mid_cut_db": [-4.0, -2.0],
+                "low_mid_cut_hz": [250.0, 400.0],
+                "presence_boost_db": [2.0, 4.0],
+                "presence_boost_hz": [2500.0, 4500.0],
+                "air_db": [0.5, 1.5],
+                "air_hz": [10000.0, 12000.0],
             },
             compression={
-                "threshold_db": [-28.0, -18.0],
-                "ratio": [3.0, 5.0],
-                "attack_ms": [3.0, 12.0],
-                "release_ms": [40.0, 160.0],
+                "ratio": [3.0, 4.0],
+                "attack_ms": [5.0, 15.0],
+                "release_ms": [40.0, 80.0],
+                "gain_reduction_db": [5.0, 7.0],
             },
             saturation={
-                "drive_db": [2.0, 6.0],
-                "tone": [-0.1, 0.3],
+                "drive_percent": [8.0, 14.0],
             },
             deesser={
-                "freq_hz": [5500.0, 8500.0],
-                "amount_db": [3.0, 7.0],
+                "freq_hz": [6000.0, 7500.0],
+                "reduction_db": [3.0, 5.0],
             },
-            bus={
-                "glue_threshold_db": [-14.0, -9.0],
-                "glue_mix": [0.6, 0.9],
+            stereo={
+                "width_percent": [102.0, 112.0],
+                "low_mono_blend_percent": [5.0, 15.0],
             },
             limiter={
                 "ceiling_db": [-1.2, -0.8],
-                "target_lufs": [-12.0, -9.0],
+                "release_ms": [80.0, 180.0],
+                "target_lufs": [-11.0, -8.0],
             },
         ),
     ),
@@ -949,32 +974,35 @@ STUDIO_PRESETS: list[StudioPreset] = [
         category="vocal",
         dsp_ranges=DspRanges(
             eq={
-                "low_cut_hz": [70, 100],
-                "low_shelf_db": [-2.0, 0.0],
-                "presence_boost_db": [1.5, 3.5],
-                "air_shelf_db": [1.0, 4.0],
+                "hpf_hz": [70.0, 90.0],
+                "low_mid_cut_db": [-2.0, -1.0],
+                "low_mid_cut_hz": [200.0, 300.0],
+                "presence_boost_db": [1.5, 3.0],
+                "presence_boost_hz": [2000.0, 4000.0],
+                "air_db": [1.0, 2.0],
+                "air_hz": [12000.0, 14000.0],
             },
             compression={
-                "threshold_db": [-24.0, -16.0],
-                "ratio": [2.5, 4.0],
-                "attack_ms": [5.0, 18.0],
-                "release_ms": [80.0, 200.0],
+                "ratio": [2.0, 3.0],
+                "attack_ms": [15.0, 30.0],
+                "release_ms": [60.0, 120.0],
+                "gain_reduction_db": [3.0, 5.0],
             },
             saturation={
-                "drive_db": [0.5, 3.5],
-                "tone": [-0.1, 0.2],
+                "drive_percent": [4.0, 7.0],
             },
             deesser={
-                "freq_hz": [6000.0, 9000.0],
-                "amount_db": [2.0, 6.0],
+                "freq_hz": [6500.0, 8000.0],
+                "reduction_db": [2.0, 4.0],
             },
-            bus={
-                "glue_threshold_db": [-16.0, -10.0],
-                "glue_mix": [0.55, 0.8],
+            stereo={
+                "width_percent": [104.0, 114.0],
+                "low_mono_blend_percent": [5.0, 15.0],
             },
             limiter={
-                "ceiling_db": [-1.2, -0.9],
-                "target_lufs": [-13.5, -10.5],
+                "ceiling_db": [-1.3, -0.9],
+                "release_ms": [100.0, 220.0],
+                "target_lufs": [-12.5, -9.5],
             },
         ),
     ),
@@ -994,32 +1022,33 @@ STUDIO_PRESETS: list[StudioPreset] = [
         category="vocal",
         dsp_ranges=DspRanges(
             eq={
-                "low_cut_hz": [80, 120],
-                "body_boost_db": [0.0, 2.0],
-                "presence_boost_db": [2.0, 4.5],
-                "air_shelf_db": [2.0, 5.0],
+                "hpf_hz": [80.0, 95.0],
+                "presence_boost_db": [2.0, 3.5],
+                "presence_boost_hz": [3000.0, 5000.0],
+                "air_db": [1.5, 3.0],
+                "air_hz": [12000.0, 16000.0],
             },
             compression={
-                "threshold_db": [-26.0, -18.0],
-                "ratio": [3.0, 4.5],
-                "attack_ms": [4.0, 14.0],
-                "release_ms": [70.0, 180.0],
+                "ratio": [2.5, 3.0],
+                "attack_ms": [10.0, 25.0],
+                "release_ms": [60.0, 110.0],
+                "gain_reduction_db": [4.0, 6.0],
             },
             saturation={
-                "drive_db": [1.0, 4.0],
-                "tone": [0.0, 0.3],
+                "drive_percent": [5.0, 8.0],
             },
             deesser={
-                "freq_hz": [6500.0, 10000.0],
-                "amount_db": [3.0, 8.0],
+                "freq_hz": [6500.0, 9000.0],
+                "reduction_db": [3.0, 5.0],
             },
-            bus={
-                "glue_threshold_db": [-16.0, -10.0],
-                "glue_mix": [0.6, 0.85],
+            stereo={
+                "width_percent": [106.0, 116.0],
+                "low_mono_blend_percent": [5.0, 15.0],
             },
             limiter={
-                "ceiling_db": [-1.2, -0.9],
-                "target_lufs": [-13.0, -10.0],
+                "ceiling_db": [-1.3, -0.9],
+                "release_ms": [90.0, 200.0],
+                "target_lufs": [-12.0, -9.5],
             },
         ),
     ),
@@ -1171,31 +1200,34 @@ STUDIO_PRESETS: list[StudioPreset] = [
         category="vocal",
         dsp_ranges=DspRanges(
             eq={
-                "low_cut_hz": [60, 90],
+                "hpf_hz": [60.0, 90.0],
                 "low_mid_body_db": [0.0, 2.5],
+                "low_mid_body_hz": [180.0, 300.0],
                 "harsh_cut_db": [-5.0, -2.0],
-                "air_shelf_db": [-1.0, 2.0],
+                "harsh_cut_hz": [2800.0, 4800.0],
+                "air_db": [-1.0, 2.0],
+                "air_hz": [9000.0, 13000.0],
             },
             compression={
-                "threshold_db": [-30.0, -20.0],
                 "ratio": [3.5, 5.0],
                 "attack_ms": [2.0, 10.0],
                 "release_ms": [40.0, 150.0],
+                "gain_reduction_db": [5.0, 8.0],
             },
             saturation={
-                "drive_db": [3.0, 7.0],
-                "tone": [-0.2, 0.1],
+                "drive_percent": [10.0, 18.0],
             },
             deesser={
                 "freq_hz": [5500.0, 8000.0],
-                "amount_db": [3.0, 7.0],
+                "reduction_db": [3.0, 7.0],
             },
-            bus={
-                "glue_threshold_db": [-15.0, -10.0],
-                "glue_mix": [0.65, 0.9],
+            stereo={
+                "width_percent": [101.0, 108.0],
+                "low_mono_blend_percent": [12.0, 24.0],
             },
             limiter={
                 "ceiling_db": [-1.2, -0.8],
+                "release_ms": [90.0, 210.0],
                 "target_lufs": [-11.5, -9.0],
             },
         ),
@@ -1216,31 +1248,34 @@ STUDIO_PRESETS: list[StudioPreset] = [
         category="vocal",
         dsp_ranges=DspRanges(
             eq={
-                "low_cut_hz": [70, 110],
+                "hpf_hz": [70.0, 110.0],
                 "mid_cut_db": [-3.0, 0.0],
+                "mid_cut_hz": [300.0, 600.0],
                 "presence_boost_db": [3.0, 6.0],
-                "air_shelf_db": [1.0, 4.0],
+                "presence_boost_hz": [3000.0, 5500.0],
+                "air_db": [1.0, 4.0],
+                "air_hz": [10000.0, 15000.0],
             },
             compression={
-                "threshold_db": [-28.0, -18.0],
                 "ratio": [3.5, 6.0],
                 "attack_ms": [1.0, 8.0],
                 "release_ms": [40.0, 120.0],
+                "gain_reduction_db": [6.0, 9.0],
             },
             saturation={
-                "drive_db": [4.0, 8.0],
-                "tone": [0.0, 0.4],
+                "drive_percent": [12.0, 20.0],
             },
             deesser={
                 "freq_hz": [6000.0, 9500.0],
-                "amount_db": [3.0, 8.0],
+                "reduction_db": [3.0, 8.0],
             },
-            bus={
-                "glue_threshold_db": [-14.0, -9.0],
-                "glue_mix": [0.6, 0.9],
+            stereo={
+                "width_percent": [104.0, 116.0],
+                "low_mono_blend_percent": [8.0, 18.0],
             },
             limiter={
                 "ceiling_db": [-1.0, -0.8],
+                "release_ms": [80.0, 200.0],
                 "target_lufs": [-10.5, -8.0],
             },
         ),
@@ -1262,8 +1297,11 @@ STUDIO_PRESETS: list[StudioPreset] = [
         dsp_ranges=DspRanges(
             eq={
                 "low_shelf_db": [1.5, 4.0],
+                "low_shelf_hz": [60.0, 120.0],
                 "low_mid_cut_db": [-3.5, -0.5],
-                "air_shelf_db": [0.5, 3.0],
+                "low_mid_cut_hz": [200.0, 350.0],
+                "air_db": [0.5, 3.0],
+                "air_hz": [9000.0, 13000.0],
             },
             compression={
                 "bus_ratio": [2.0, 3.0],
@@ -1279,6 +1317,7 @@ STUDIO_PRESETS: list[StudioPreset] = [
             },
             limiter={
                 "ceiling_db": [-1.0, -0.7],
+                "release_ms": [80.0, 200.0],
                 "target_lufs": [-9.5, -7.0],
             },
         ),
@@ -1393,31 +1432,34 @@ STUDIO_PRESETS: list[StudioPreset] = [
         category="vocal",
         dsp_ranges=DspRanges(
             eq={
-                "low_cut_hz": [70, 100],
+                "hpf_hz": [70.0, 100.0],
                 "low_mid_body_db": [0.0, 2.0],
+                "low_mid_body_hz": [180.0, 280.0],
                 "presence_boost_db": [1.0, 3.0],
-                "air_shelf_db": [0.5, 3.0],
+                "presence_boost_hz": [2500.0, 4200.0],
+                "air_db": [0.5, 3.0],
+                "air_hz": [9000.0, 13000.0],
             },
             compression={
-                "threshold_db": [-24.0, -16.0],
                 "ratio": [2.0, 3.5],
                 "attack_ms": [8.0, 20.0],
                 "release_ms": [100.0, 260.0],
+                "gain_reduction_db": [3.0, 5.0],
             },
             saturation={
-                "drive_db": [0.5, 3.0],
-                "tone": [-0.1, 0.2],
+                "drive_percent": [4.0, 9.0],
             },
             deesser={
                 "freq_hz": [6000.0, 9000.0],
-                "amount_db": [2.0, 6.0],
+                "reduction_db": [2.0, 6.0],
             },
-            bus={
-                "glue_threshold_db": [-18.0, -12.0],
-                "glue_mix": [0.5, 0.8],
+            stereo={
+                "width_percent": [103.0, 113.0],
+                "low_mono_blend_percent": [5.0, 15.0],
             },
             limiter={
                 "ceiling_db": [-1.3, -0.9],
+                "release_ms": [120.0, 260.0],
                 "target_lufs": [-14.0, -11.0],
             },
         ),
@@ -1438,31 +1480,34 @@ STUDIO_PRESETS: list[StudioPreset] = [
         category="vocal",
         dsp_ranges=DspRanges(
             eq={
-                "low_cut_hz": [80, 110],
+                "hpf_hz": [80.0, 110.0],
                 "low_mid_cut_db": [-3.0, -1.0],
+                "low_mid_cut_hz": [220.0, 350.0],
                 "presence_boost_db": [2.0, 4.0],
-                "air_shelf_db": [2.0, 5.0],
+                "presence_boost_hz": [2800.0, 5000.0],
+                "air_db": [2.0, 5.0],
+                "air_hz": [11000.0, 16000.0],
             },
             compression={
-                "threshold_db": [-26.0, -18.0],
                 "ratio": [2.5, 4.0],
                 "attack_ms": [6.0, 18.0],
                 "release_ms": [80.0, 200.0],
+                "gain_reduction_db": [3.0, 6.0],
             },
             saturation={
-                "drive_db": [1.0, 3.5],
-                "tone": [0.0, 0.3],
+                "drive_percent": [5.0, 10.0],
             },
             deesser={
                 "freq_hz": [6500.0, 10000.0],
-                "amount_db": [3.0, 7.0],
+                "reduction_db": [3.0, 7.0],
             },
-            bus={
-                "glue_threshold_db": [-18.0, -12.0],
-                "glue_mix": [0.55, 0.85],
+            stereo={
+                "width_percent": [105.0, 118.0],
+                "low_mono_blend_percent": [5.0, 15.0],
             },
             limiter={
                 "ceiling_db": [-1.2, -0.9],
+                "release_ms": [100.0, 220.0],
                 "target_lufs": [-13.0, -10.0],
             },
         ),
@@ -1483,31 +1528,34 @@ STUDIO_PRESETS: list[StudioPreset] = [
         category="vocal",
         dsp_ranges=DspRanges(
             eq={
-                "low_cut_hz": [70, 100],
+                "hpf_hz": [70.0, 100.0],
                 "body_boost_db": [0.0, 2.5],
+                "body_boost_hz": [180.0, 260.0],
                 "presence_boost_db": [1.0, 3.0],
-                "air_shelf_db": [1.0, 4.0],
+                "presence_boost_hz": [2500.0, 4200.0],
+                "air_db": [1.0, 4.0],
+                "air_hz": [10000.0, 15000.0],
             },
             compression={
-                "threshold_db": [-24.0, -16.0],
                 "ratio": [2.0, 3.5],
                 "attack_ms": [8.0, 22.0],
                 "release_ms": [120.0, 260.0],
+                "gain_reduction_db": [3.0, 5.0],
             },
             saturation={
-                "drive_db": [0.5, 3.0],
-                "tone": [-0.1, 0.2],
+                "drive_percent": [4.0, 9.0],
             },
             deesser={
                 "freq_hz": [6500.0, 9500.0],
-                "amount_db": [2.0, 6.0],
+                "reduction_db": [2.0, 6.0],
             },
-            bus={
-                "glue_threshold_db": [-18.0, -12.0],
-                "glue_mix": [0.5, 0.8],
+            stereo={
+                "width_percent": [104.0, 116.0],
+                "low_mono_blend_percent": [5.0, 15.0],
             },
             limiter={
                 "ceiling_db": [-1.3, -0.9],
+                "release_ms": [130.0, 260.0],
                 "target_lufs": [-14.0, -11.0],
             },
         ),
