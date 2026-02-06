@@ -34,7 +34,7 @@ app = FastAPI(title="RiddimBase Studio Backend")
 #
 # Default to a local DSP instance (e.g. Fly.io or Docker on localhost) and
 # override via the DSP_URL environment variable in deployed environments.
-DSP_BASE_URL = os.getenv("DSP_URL", "http://localhost:8080").rstrip("/")
+DSP_BASE_URL = os.getenv("DSP_URL", "https://mixsmvrt-dsp.fly.dev").rstrip("/")
 
 # Allow local Next.js dev and the deployed studio frontend
 app.add_middleware(
