@@ -31,7 +31,10 @@ app = FastAPI(title="RiddimBase Studio Backend")
 
 # Base URL for the external DSP service. This is proxied via /dsp/* endpoints
 # so the browser only talks to this backend (which already has CORS configured).
-DSP_BASE_URL = os.getenv("DSP_URL", "https://mixsmvrt-dsp-1.onrender.com").rstrip("/")
+#
+# Default to a local DSP instance (e.g. Fly.io or Docker on localhost) and
+# override via the DSP_URL environment variable in deployed environments.
+DSP_BASE_URL = os.getenv("DSP_URL", "http://localhost:8080").rstrip("/")
 
 # Allow local Next.js dev and the deployed studio frontend
 app.add_middleware(
