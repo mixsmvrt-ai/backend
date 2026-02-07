@@ -34,7 +34,7 @@ app = FastAPI(title="RiddimBase Studio Backend")
 #
 # Default to a local DSP instance (e.g. Fly.io or Docker on localhost) and
 # override via the DSP_URL environment variable in deployed environments.
-DSP_BASE_URL = os.getenv("DSP_URL", "https://mixsmvrt-dsp.fly.dev").rstrip("/")
+DSP_BASE_URL = os.getenv("DSP_URL", "http://localhost:8080").rstrip("/")
 
 # Allow local Next.js dev and the deployed studio frontend
 app.add_middleware(
@@ -270,10 +270,13 @@ async def get_user_credits(user_id: str) -> UserCreditsResponse:
         if not ft:
             continue
         remaining_raw = row.get("remaining_uses")
-        try:
-            remaining_val = int(remaining_raw)
-        except (TypeError, ValueError):
+        if not isinstance(remaining_raw, (int, float, str)):
             remaining_val = 0
+        else:
+            try:
+                remaining_val = int(remaining_raw)
+            except (TypeError, ValueError):
+                remaining_val = 0
 
         expires_at_raw = row.get("expires_at")
         expires_dt: Optional[datetime] = None
@@ -2125,10 +2128,13 @@ async def _consume_user_credit(user_id: str | None, feature_type: str | None) ->
     now = datetime.utcnow()
     for credit in credits:
         remaining_raw = credit.get("remaining_uses")
-        try:
-            remaining = int(remaining_raw)
-        except (TypeError, ValueError):
+        if not isinstance(remaining_raw, (int, float, str)):
             remaining = 0
+        else:
+            try:
+                remaining = int(remaining_raw)
+            except (TypeError, ValueError):
+                remaining = 0
 
         # Negative remaining_uses means unlimited – nothing to decrement.
         if remaining < 0:
@@ -2168,6 +2174,7 @@ async def _run_processing_job(job_id: str, job_type: str, input_files: Dict[str,
     update Supabase directly if desired.
     """
 
+    last_stage_name: str | None = None
     try:
         # Determine the concrete step list for this job from metadata,
         # falling back to a generic template when necessary.
@@ -3160,10 +3167,13 @@ async def admin_update_user_credits(user_id: str, payload: UpdateUserCreditsPayl
     else:
         credit = rows[0]
         remaining_raw = credit.get("remaining_uses")
-        try:
-            remaining = int(remaining_raw)
-        except (TypeError, ValueError):
+        if not isinstance(remaining_raw, (int, float, str)):
             remaining = 0
+        else:
+            try:
+                remaining = int(remaining_raw)
+            except (TypeError, ValueError):
+                remaining = 0
         # Leave unlimited buckets unchanged.
         if remaining < 0:
             return {"user_id": user_id, "feature_type": payload.feature_type, "remaining_uses": remaining}
