@@ -6,6 +6,7 @@ import shutil
 import uuid
 import asyncio
 import os
+import logging
 from datetime import datetime, timedelta, date
 from typing import Literal, Optional, Any, Dict, List
 
@@ -26,6 +27,9 @@ from supabase_client import (
     SupabaseConfigError,
 )
 from progress import update_progress, mark_job_complete, mark_job_failed
+
+
+logger = logging.getLogger("riddimbase_backend")
 
 app = FastAPI(title="RiddimBase Studio Backend")
 
@@ -57,6 +61,54 @@ app.include_router(health_router)
 BASE_DIR = Path(__file__).resolve().parent
 SESSIONS_DIR = BASE_DIR / "sessions"
 SESSIONS_DIR.mkdir(exist_ok=True)
+
+
+async def wait_for_dsp(max_attempts: int = 6) -> None:
+    """Poll the DSP /health endpoint with exponential backoff.
+
+    This is used as a lightweight readiness check so callers avoid sending
+    large audio payloads to a cold or unreachable Fly.io instance.
+    """
+
+    health_url = f"{DSP_BASE_URL}/health"
+    backoff = 1.0
+    last_error: Exception | None = None
+
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        for attempt in range(1, max_attempts + 1):
+            try:
+                logger.info(
+                    "[DSP] Health check attempt %s/%s to %s", attempt, max_attempts, health_url
+                )
+                resp = await client.get(health_url)
+                if resp.status_code == 200:
+                    logger.info("[DSP] Health check succeeded")
+                    return
+                last_error = RuntimeError(f"Unexpected status {resp.status_code}")
+                logger.warning(
+                    "[DSP] Health check returned status %s: %s",
+                    resp.status_code,
+                    resp.text,
+                )
+            except httpx.RequestError as exc:  # pragma: no cover - network failures
+                last_error = exc
+                logger.warning(
+                    "[DSP] Health check network error on attempt %s/%s: %s",
+                    attempt,
+                    max_attempts,
+                    exc,
+                )
+
+            if attempt == max_attempts:
+                break
+
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, 8.0)
+
+    message = f"DSP health check failed after {max_attempts} attempts"
+    if last_error is not None:
+        message = f"{message}: {last_error}"
+    raise RuntimeError(message)
 
 
 def _save_upload(upload: UploadFile | None, dest: Path | None) -> Path | None:
@@ -2167,64 +2219,74 @@ async def _consume_user_credit(user_id: str | None, feature_type: str | None) ->
 
 
 async def _run_processing_job(job_id: str, job_type: str, input_files: Dict[str, Any]) -> None:
-    """Background coroutine that simulates a multi-stage DSP pipeline.
+    """Background coroutine that represents a multi-stage DSP pipeline.
 
-    In production you can replace the simulated stages with real calls to
-    your DSP microservice, passing along the job_id so the DSP can also
-    update Supabase directly if desired.
+    The current implementation updates Supabase job progress using a fixed
+    set of conceptual steps that mirror the DSP processing flow. When input
+    files include concrete audio URLs, this function can be extended to call
+    the external DSP service once per track, using :func:`wait_for_dsp` to
+    guard against cold starts and connectivity issues.
     """
 
     last_stage_name: str | None = None
     try:
-        # Determine the concrete step list for this job from metadata,
-        # falling back to a generic template when necessary.
-        meta = input_files.get("_meta") if isinstance(input_files, dict) else None
-        feature_type = None
-        if isinstance(meta, dict):
-            feature_type = meta.get("feature_type") or meta.get("flow_key")
-        step_names = meta.get("steps") if isinstance(meta, dict) else None
-        if not isinstance(step_names, list) or not step_names:
-            step_names = _steps_for_feature_type(str(feature_type) if feature_type else None)
+        # Canonical DSP-style progress steps. These are intentionally coarse
+        # grained and can be refined as the remote DSP exposes richer
+        # instrumentation.
+        dsp_steps: list[tuple[str, int]] = [
+            ("Loading audio", 5),
+            ("Analyzing track", 15),
+            ("EQ", 30),
+            ("Compression", 50),
+            ("Saturation", 70),
+            ("Loudness / limiting", 85),
+        ]
 
-        steps: list[str] = [str(name) for name in step_names]
-        total_steps = len(steps) or 1
-        last_stage_name: str | None = None
+        # Mark the job as actively processing on the first step.
+        await update_processing_job(
+            job_id,
+            {
+                "status": "processing",
+                "progress": dsp_steps[0][1],
+                "current_stage": dsp_steps[0][0],
+            },
+        )
+        last_stage_name = dsp_steps[0][0]
 
-        # Execute each conceptual DSP stage; in a production system, replace
-        # the sleeps with real calls into the DSP microservice, one per stage.
-        for index, stage_name in enumerate(steps, start=1):
+        # Best-effort readiness check against the DSP service. If this fails,
+        # the surrounding exception handler will mark the job as failed.
+        await wait_for_dsp()
+
+        # For now we simulate the intermediate DSP work with short sleeps,
+        # while still updating Supabase progress using the canonical
+        # percentages that the frontend expects.
+        for stage_name, pct in dsp_steps[1:]:
             last_stage_name = stage_name
-            is_last = index == total_steps
-
-            # Simulate DSP work for this step (replace with real DSP call).
-            # await call_dsp_stage(...)
             await asyncio.sleep(0.1)
+            await update_processing_job(
+                job_id,
+                {
+                    "status": "processing",
+                    "progress": pct,
+                    "current_stage": stage_name,
+                },
+            )
 
-            if not is_last:
-                # Non-final steps use the shared progress helper so the
-                # percentage is derived from completed_steps / total_steps.
-                await update_progress(
-                    job_id=job_id,
-                    step_name=stage_name,
-                    step_index=index,
-                    total_steps=total_steps,
-                )
-            else:
-                # Final stage: mark the job as completed at 100% and attach
-                # any output file metadata.
-                output_files: Dict[str, Any] = {
-                    "master_url": input_files.get("target_path", ""),
-                }
+        # Final stage: mark the job as completed at 100% and attach any
+        # output file metadata that upstream callers may have supplied.
+        output_files: Dict[str, Any] = {
+            "master_url": input_files.get("target_path", ""),
+        }
 
-                await update_processing_job(
-                    job_id,
-                    {
-                        "status": "completed",
-                        "progress": 100,
-                        "current_stage": stage_name,
-                        "output_files": output_files,
-                    },
-                )
+        await update_processing_job(
+            job_id,
+            {
+                "status": "completed",
+                "progress": 100,
+                "current_stage": "Complete",
+                "output_files": output_files,
+            },
+        )
 
         # Best-effort preset usage tracking once the job has completed.
         try:
@@ -2628,10 +2690,20 @@ async def proxy_dsp_process(
         )
     }
 
+    # Ensure the DSP instance is reachable before attempting to stream audio
+    # to it. This avoids slow connection failures when Fly.io needs to cold
+    # start a machine.
+    try:
+        await wait_for_dsp()
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.error("[DSP] Health check failed before /process call: %s", exc)
+        raise HTTPException(status_code=502, detail=f"DSP service unreachable: {exc}") from exc
+
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
             resp = await client.post(f"{DSP_BASE_URL}/process", data=data, files=files)
     except httpx.RequestError as exc:  # pragma: no cover - network errors
+        logger.error("[DSP] Request error during /process proxy: %s", exc)
         raise HTTPException(status_code=502, detail=f"DSP service unreachable: {exc}") from exc
 
     # Bubble up DSP errors with as much detail as possible
