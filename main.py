@@ -36,9 +36,10 @@ app = FastAPI(title="RiddimBase Studio Backend")
 # Base URL for the external DSP service. This is proxied via /dsp/* endpoints
 # so the browser only talks to this backend (which already has CORS configured).
 #
-# Default to a local DSP instance (e.g. Fly.io or Docker on localhost) and
-# override via the DSP_URL environment variable in deployed environments.
-DSP_BASE_URL = os.getenv("DSP_URL", "http://localhost:8080").rstrip("/")
+# Use DSP_BASE_URL in production (e.g. https://mixsmvrt-dsp.fly.dev) and
+# fall back to DSP_URL / localhost for backwards compatibility.
+_dsp_base = os.getenv("DSP_BASE_URL") or os.getenv("DSP_URL", "http://localhost:8080")
+DSP_BASE_URL = _dsp_base.rstrip("/")
 
 # Allow local Next.js dev and the deployed studio frontend
 app.add_middleware(
@@ -71,7 +72,9 @@ async def wait_for_dsp(max_attempts: int = 6) -> None:
     """
 
     health_url = f"{DSP_BASE_URL}/health"
-    backoff = 1.0
+    # Explicit backoff sequence (seconds) between attempts. Length < max_attempts
+    # means the final attempt will not sleep afterwards.
+    backoffs = [1.0, 2.0, 4.0, 8.0, 16.0]
     last_error: Exception | None = None
 
     async with httpx.AsyncClient(timeout=5.0) as client:
@@ -102,8 +105,9 @@ async def wait_for_dsp(max_attempts: int = 6) -> None:
             if attempt == max_attempts:
                 break
 
-            await asyncio.sleep(backoff)
-            backoff = min(backoff * 2, 8.0)
+            # Sleep according to the backoff schedule (1, 2, 4, 8, 16...).
+            delay = backoffs[attempt - 1] if attempt - 1 < len(backoffs) else backoffs[-1]
+            await asyncio.sleep(delay)
 
     message = f"DSP health check failed after {max_attempts} attempts"
     if last_error is not None:
@@ -2697,14 +2701,44 @@ async def proxy_dsp_process(
         await wait_for_dsp()
     except Exception as exc:  # pragma: no cover - defensive
         logger.error("[DSP] Health check failed before /process call: %s", exc)
-        raise HTTPException(status_code=502, detail=f"DSP service unreachable: {exc}") from exc
+        # If this proxy is associated with a Supabase processing job, mark it
+        # as failed so the studio UI can surface the error state.
+        if job_id is not None:
+            try:
+                await mark_job_failed(job_id, step_name="DSP health check", error_message=str(exc))
+            except Exception:
+                # Supabase failures should not mask the original error.
+                pass
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "DSP_UNAVAILABLE",
+                "message": f"DSP health check failed: {exc}",
+            },
+        ) from exc
+
+    dsp_url = f"{DSP_BASE_URL}/process"
+    logger.info("[DSP] Proxying /process call to %s (job_id=%s, track_id=%s)", dsp_url, job_id, track_id)
 
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.post(f"{DSP_BASE_URL}/process", data=data, files=files)
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            resp = await client.post(dsp_url, data=data, files=files)
     except httpx.RequestError as exc:  # pragma: no cover - network errors
         logger.error("[DSP] Request error during /process proxy: %s", exc)
-        raise HTTPException(status_code=502, detail=f"DSP service unreachable: {exc}") from exc
+        if job_id is not None:
+            try:
+                await mark_job_failed(job_id, step_name="DSP /process", error_message=str(exc))
+            except Exception:
+                pass
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "DSP_UNREACHABLE",
+                "message": f"DSP service unreachable: {exc}",
+            },
+        ) from exc
+
+    logger.info("[DSP] Received response from %s with status %s", dsp_url, resp.status_code)
 
     # Bubble up DSP errors with as much detail as possible
     if resp.status_code >= 400:
@@ -2712,12 +2746,31 @@ async def proxy_dsp_process(
             detail: Any = resp.json()
         except ValueError:
             detail = {"detail": resp.text}
+
+        if job_id is not None:
+            try:
+                await mark_job_failed(job_id, step_name="DSP /process", error_message=str(detail))
+            except Exception:
+                pass
+
         raise HTTPException(status_code=resp.status_code, detail=detail)
 
     try:
         payload = resp.json()
     except ValueError as exc:
-        raise HTTPException(status_code=502, detail=f"Invalid JSON from DSP: {exc}") from exc
+        logger.error("[DSP] Invalid JSON from /process: %s", exc)
+        if job_id is not None:
+            try:
+                await mark_job_failed(job_id, step_name="DSP /process", error_message=str(exc))
+            except Exception:
+                pass
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error": "DSP_INVALID_RESPONSE",
+                "message": f"Invalid JSON from DSP: {exc}",
+            },
+        ) from exc
 
     return JSONResponse(status_code=resp.status_code, content=payload)
 
