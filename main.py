@@ -2832,6 +2832,7 @@ async def proxy_dsp_process(
     job_id: Optional[str] = Form(None),
     track_id: Optional[str] = Form(None),
     track_role: Optional[str] = Form(None),
+    vocal_preset: Optional[str] = Form(None),
 ) -> JSONResponse:
     """Proxy the studio's multipart /process call to the external DSP service.
 
@@ -2866,6 +2867,8 @@ async def proxy_dsp_process(
         data["track_id"] = track_id
     if track_role is not None:
         data["track_role"] = track_role
+    if vocal_preset is not None:
+        data["vocal_preset"] = vocal_preset
 
     # Read uploaded file contents and forward to DSP
     file_bytes = await file.read()
