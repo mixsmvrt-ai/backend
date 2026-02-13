@@ -1,28 +1,55 @@
 
-import subprocess
+from __future__ import annotations
+
+from typing import Any, Dict
+
+from .analysis import analyse_basic, TrackAnalysis
+from .gain_staging import GainDecision, decide_input_gain
+from .ffmpeg_render import render_master
 
 
-def run(cmd: str) -> None:
-    subprocess.run(cmd, shell=True, check=True)
+def ai_master(
+    input_mix: str,
+    output_master: str,
+    target_lufs: str = "-14",
+) -> Dict[str, Any]:
+    """Hybrid Python+ffmpeg mastering pipeline.
 
-
-def ai_master(input_mix: str, output_master: str, target_lufs: str = "-14") -> str:
-    """Apply gentle master EQ, compression and limiting towards a LUFS target.
-
-    This approximates the MASTER BUS section of MIX_AND_MASTER_FLOW_DSP:
-    low-shelf and air lift, low-ratio bus compression, and a limiter with
-    ceiling at -1 dBTP feeding EBU R128 loudness normalisation.
+    Steps:
+    - Analyse the input mix via ffmpeg-based loudness analysis
+    - Compute a simple mix-bus gain staging decision
+    - Render master via ffmpeg (EQ, compression, limiter, loudnorm)
+    - Return a JSON-friendly report including analysis and gain decision
     """
 
-    cmd = (
-        f'ffmpeg -y -i "{input_mix}" -af '
-        '"equalizer=f=100:t=q:w=1.1:g=1,'  # low-region lift ~80–120 Hz
-        'equalizer=f=13000:t=q:w=1.3:g=1,'  # air lift ~12–16 kHz
-        'acompressor=threshold=-18dB:ratio=1.7:attack=50:release=180,'
-        'alimiter=limit=0.89,'
-        f'loudnorm=I={target_lufs}:TP=-1.0:LRA=11" '
-        f'"{output_master}"'
+    # 1) Analyse the pre-master mix
+    mix_analysis: TrackAnalysis = analyse_basic(input_mix)
+
+    # 2) Decide pre-master gain for mix-bus role
+    mix_gain: GainDecision = decide_input_gain("mix-bus", mix_analysis)
+
+    # 3) We currently fold the gain into the mastering render by
+    #     letting ffmpeg handle dynamics and loudnorm. If we later
+    #     want explicit input gain, we can prepend a volume filter.
+    rendered_master = render_master(
+        input_mix=input_mix,
+        output_master=output_master,
+        target_lufs=target_lufs,
+        extra_ceiling_db=-1.0,
     )
 
-    run(cmd)
-    return output_master
+    # 4) Build a JSON-friendly report
+    return {
+        "output_path": rendered_master,
+        "input": {
+            "path": input_mix,
+            "analysis": {
+                "duration_s": mix_analysis.duration_s,
+                "sample_rate": mix_analysis.sample_rate,
+                "peak_dbfs": mix_analysis.peak_dbfs,
+                "integrated_lufs": mix_analysis.integrated_lufs,
+            },
+            "gain_decision_db": mix_gain.input_gain_db,
+        },
+        "target_lufs": target_lufs,
+    }

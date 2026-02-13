@@ -13,8 +13,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Literal, TypedDict
 
-from .analysis import analyse_basic
-from .gain_staging import decide_input_gain
+from .analysis import analyse_basic, TrackAnalysis
+from .gain_staging import decide_input_gain, GainDecision
 from .ffmpeg_render import render_mix_with_sidechain
 
 
@@ -125,7 +125,7 @@ def preset_from_dict(data: PresetDefinitionDict) -> PresetDefinition:
     )
 
 
-def ai_mix(vocal_path: str, beat_path: str, output_path: str) -> str:
+def ai_mix(vocal_path: str, beat_path: str, output_path: str) -> Dict[str, Any]:
     """Hybrid Python+ffmpeg mixing pipeline.
 
     Steps:
@@ -140,21 +140,48 @@ def ai_mix(vocal_path: str, beat_path: str, output_path: str) -> str:
     os.makedirs(os.path.dirname(output_path) or "temp", exist_ok=True)
 
     # 1) Basic analysis per input (streamed inside ffmpeg)
-    vocal_analysis = analyse_basic(vocal_path)
-    beat_analysis = analyse_basic(beat_path)
+    vocal_analysis: TrackAnalysis = analyse_basic(vocal_path)
+    beat_analysis: TrackAnalysis = analyse_basic(beat_path)
 
     # 2) Role-aware gain decisions (clamped to +/- 6 dB)
-    vocal_gain = decide_input_gain("vocal", vocal_analysis)
-    beat_gain = decide_input_gain("beat", beat_analysis)
+    vocal_gain: GainDecision = decide_input_gain("vocal", vocal_analysis)
+    beat_gain: GainDecision = decide_input_gain("beat", beat_analysis)
 
     # 3) Delegate heavy lifting to ffmpeg
-    return render_mix_with_sidechain(
+    rendered_path = render_mix_with_sidechain(
         vocal_path=vocal_path,
         beat_path=beat_path,
         out_path=output_path,
         vocal_gain=vocal_gain,
         beat_gain=beat_gain,
     )
+
+    # 4) Build a small JSON-friendly report for the frontend
+    return {
+        "output_path": rendered_path,
+        "inputs": {
+            "vocal": {
+                "path": vocal_path,
+                "analysis": {
+                    "duration_s": vocal_analysis.duration_s,
+                    "sample_rate": vocal_analysis.sample_rate,
+                    "peak_dbfs": vocal_analysis.peak_dbfs,
+                    "integrated_lufs": vocal_analysis.integrated_lufs,
+                },
+                "gain_decision_db": vocal_gain.input_gain_db,
+            },
+            "beat": {
+                "path": beat_path,
+                "analysis": {
+                    "duration_s": beat_analysis.duration_s,
+                    "sample_rate": beat_analysis.sample_rate,
+                    "peak_dbfs": beat_analysis.peak_dbfs,
+                    "integrated_lufs": beat_analysis.integrated_lufs,
+                },
+                "gain_decision_db": beat_gain.input_gain_db,
+            },
+        },
+    }
 
 
 # -------------------------
