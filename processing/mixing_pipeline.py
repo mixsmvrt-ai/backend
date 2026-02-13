@@ -9,50 +9,13 @@ audio-engine, so Torch/JUCE-style DSP can share the same preset metadata.
 from __future__ import annotations
 
 import os
-import subprocess
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Literal, TypedDict
 
-
-def run(cmd: str) -> None:
-    subprocess.run(cmd, shell=True, check=True)
-
-
-def ai_mix(vocal_path: str, beat_path: str, output_path: str) -> str:
-    """Mix vocal and beat using sidechain-based space creation and mix-bus glue.
-
-    This is a ffmpeg approximation of the MIXING_ONLY_FLOW_DSP / MIX_AND_MASTER
-    specs: vocal EQ+compression+parallel chain, beat EQ + sidechain ducking
-    from the vocal bus, and gentle mix-bus compression.
-    """
-
-    os.makedirs("temp", exist_ok=True)
-
-    cmd = (
-        f'ffmpeg -y -i "{beat_path}" -i "{vocal_path}" '
-        '-filter_complex "'
-        # Vocal foreground chain: EQ, then parallel compression
-        '[1:a]highpass=f=85,'
-        'equalizer=f=280:t=q:w=1.2:g=-2,'
-        'equalizer=f=3200:t=q:w=1.0:g=3,'
-        'equalizer=f=12000:t=q:w=1.2:g=2,'
-        'asplit=2[vdry][vpar];'
-        '[vpar]acompressor=threshold=-24dB:ratio=6:attack=5:release=50[vcomp];'
-        '[vdry][vcomp]amix=inputs=2:weights=0.8 0.2[vocal];'
-        # Beat EQ for space plus broadband sidechain compression keyed by vocal
-        '[0:a]equalizer=f=250:t=q:w=1.2:g=-3,'
-        'equalizer=f=3500:t=q:w=1.4:g=-3[beat];'
-        '[beat][vocal]sidechaincompress='
-        'threshold=-24dB:ratio=3:attack=10:release=120[beat_sc][v];'
-        # Sum beat and vocal, then apply gentle mix-bus glue compression
-        '[beat_sc][v]amix=inputs=2:weights=1 1[mix];'
-        '[mix]acompressor=threshold=-18dB:ratio=2:attack=40:release=150[out]" '
-        f'-map "[out]" -c:a pcm_s16le "{output_path}"'
-    )
-
-    run(cmd)
-    return output_path
+from .analysis import analyse_basic
+from .gain_staging import decide_input_gain
+from .ffmpeg_render import render_mix_with_sidechain
 
 
 class ProcessorId(str, Enum):
@@ -159,6 +122,38 @@ def preset_from_dict(data: PresetDefinitionDict) -> PresetDefinition:
         role=data["role"],
         notes=data.get("notes"),
         chain=chain_from_dict(data["chain"]),
+    )
+
+
+def ai_mix(vocal_path: str, beat_path: str, output_path: str) -> str:
+    """Hybrid Python+ffmpeg mixing pipeline.
+
+    Steps:
+    - Run lightweight ffmpeg-based analysis on vocal and beat
+    - Compute simple, role-aware gain staging decisions
+    - Render the actual mix via ffmpeg using sidechain ducking
+
+    This keeps Python CPU/memory usage small while still letting us
+    evolve preset logic and role-aware behaviour over time.
+    """
+
+    os.makedirs(os.path.dirname(output_path) or "temp", exist_ok=True)
+
+    # 1) Basic analysis per input (streamed inside ffmpeg)
+    vocal_analysis = analyse_basic(vocal_path)
+    beat_analysis = analyse_basic(beat_path)
+
+    # 2) Role-aware gain decisions (clamped to +/- 6 dB)
+    vocal_gain = decide_input_gain("vocal", vocal_analysis)
+    beat_gain = decide_input_gain("beat", beat_analysis)
+
+    # 3) Delegate heavy lifting to ffmpeg
+    return render_mix_with_sidechain(
+        vocal_path=vocal_path,
+        beat_path=beat_path,
+        out_path=output_path,
+        vocal_gain=vocal_gain,
+        beat_gain=beat_gain,
     )
 
 
