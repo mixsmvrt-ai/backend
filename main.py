@@ -1741,28 +1741,30 @@ FLOW_STEP_TEMPLATES: dict[str, list[str]] = {
     ],
     # Mixing-only workflows (no mastering limiter)
     "mixing_only": [
-        "Analyzing audio",
-        "Gain staging",
-        "Applying EQ",
-        "Applying compression",
-        "Adding saturation",
-        "Stereo enhancement",
-        "Mix render",
+        "Track analysis & classification",
+        "Selecting vocal tone preset",
+        "Vocal cleanup",
+        "Preset-driven vocal EQ & compression",
+        "Beat EQ & vocal pocketing",
+        "Adapting vocal dynamics & FX",
+        "Stereo image balance",
+        "Mix quality check",
+        "Final mix render",
     ],
     # Full mix + master bus flow
     "mix_master": [
-        "Analyzing audio",
-        "Detecting vocal characteristics",
-        "Cleaning noise & artifacts",
-        "Gain staging",
-        "Applying EQ",
-        "Applying compression",
-        "De-essing",
-        "Adding saturation",
-        "Stereo enhancement",
-        "Bus processing",
-        "Loudness normalization",
-        "Finalizing output",
+        "Track analysis & classification",
+        "Selecting vocal tone preset",
+        "Vocal cleanup",
+        "Preset-driven vocal EQ & compression",
+        "Beat EQ & vocal pocketing",
+        "Adapting vocal dynamics & FX",
+        "Mix balance verification",
+        "Pre-master loudness prep",
+        "Master EQ & dynamics",
+        "Limiting & loudness targeting",
+        "Master quality control",
+        "Final master render",
     ],
     # Mastering-only flow
     "mastering_only": [
@@ -1807,12 +1809,14 @@ def _resolve_preset_for_request(
 ) -> tuple[StudioPreset | None, str | None]:
     """Resolve and validate a StudioPreset for a job request.
 
-    Behaviour:
-    - If payload.preset_id is not provided, returns (None, payload.target).
-    - If preset_id is provided, it must exist in STUDIO_PRESETS.
-    - When feature_type is set, the preset's mode must be compatible.
-    - When target is set on the payload it must match the preset.target;
-      otherwise a 422 is raised.
+        Behaviour:
+        - If payload.preset_id is not provided, returns (None, payload.target).
+        - If preset_id matches a preset in the static STUDIO_PRESETS registry,
+            basic compatibility validation is applied (mode / target).
+        - If preset_id does not match STUDIO_PRESETS (for example, dynamically
+            generated vocal tone presets exposed by /studio/presets), the request
+            is allowed to proceed without attaching a StudioPreset; callers are
+            still responsible for passing any DSP chain metadata they require.
 
     Returns a tuple of (resolved_preset_or_None, effective_target_or_None).
     """
@@ -1827,8 +1831,15 @@ def _resolve_preset_for_request(
     mode = _map_feature_type_to_preset_mode(payload.feature_type)
 
     preset = next((p for p in STUDIO_PRESETS if p.id == preset_id), None)
+
+    # If the preset is not part of the static registry, treat it as a
+    # dynamic / ad-hoc preset (for example, a vocal tone preset surfaced
+    # directly from the DSP catalog). In that case we skip strict
+    # validation and simply allow the job to proceed without attaching a
+    # StudioPreset; downstream code will still have access to the raw
+    # preset_id via the request payload for analytics or logging.
     if preset is None:
-        raise HTTPException(status_code=400, detail=f"Unknown preset_id '{preset_id}'")
+        return None, target
 
     if mode is not None and preset.mode != mode:
         raise HTTPException(
