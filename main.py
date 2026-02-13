@@ -41,6 +41,11 @@ app = FastAPI(title="RiddimBase Studio Backend")
 _dsp_base = os.getenv("DSP_BASE_URL") or os.getenv("DSP_URL", "http://localhost:8080")
 DSP_BASE_URL = _dsp_base.rstrip("/")
 
+# Simple in-memory cache mapping (flow, genre) to the first vocal preset id
+# returned by the DSP /vocal-presets catalog. This avoids repeated network
+# calls when multiple studio presets share the same flow/genre pair.
+_VOCAL_PRESET_CACHE: dict[tuple[str, str], str] = {}
+
 # Allow local Next.js dev and the deployed studio frontend
 app.add_middleware(
     CORSMiddleware,
@@ -416,6 +421,11 @@ class StudioPreset(BaseModel):
     flow: Optional[PresetFlow] = None
     category: Optional[PresetCategory] = None
     dsp_ranges: Optional[DspRanges] = None
+    # Optional: concrete vocal preset id (flow:genre:preset_name) from
+    # the DSP vocal preset catalog. When provided for vocal-focused
+    # presets, the studio can pass this through to the DSP engine so
+    # the exact VocalPresetProfile is selected instead of a default.
+    vocal_preset_id: Optional[str] = None
 
 
 STUDIO_PRESETS: list[StudioPreset] = [
@@ -1911,8 +1921,63 @@ async def list_studio_presets(mode: Optional[PresetMode] = None) -> list[StudioP
     """
 
     if mode is None:
-        return STUDIO_PRESETS
-    return [p for p in STUDIO_PRESETS if p.mode == mode]
+        base_presets = STUDIO_PRESETS
+    else:
+        base_presets = [p for p in STUDIO_PRESETS if p.mode == mode]
+
+    # Enrich vocal-focused presets with a concrete vocal_preset_id from
+    # the DSP /vocal-presets catalog so the studio can select a specific
+    # VocalPresetProfile instead of relying on per-genre defaults.
+    async def resolve_vocal_preset_id(p: StudioPreset) -> str | None:
+        if p.target != "vocal" or not p.genre:
+            return None
+
+        # Map studio preset mode to DSP flow_type used by the vocal
+        # preset registry.
+        if p.mode == "mixing_only":
+            flow_type = "mixing_only"
+        elif p.mode == "mix_and_master":
+            flow_type = "mixing_mastering"
+        else:
+            return None
+
+        genre_key = p.genre.lower()
+        cache_key = (flow_type, genre_key)
+        if cache_key in _VOCAL_PRESET_CACHE:
+            return _VOCAL_PRESET_CACHE[cache_key]
+
+        url = f"{DSP_BASE_URL}/vocal-presets"
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(url, params={"flow": flow_type, "genre": genre_key})
+                if resp.status_code != 200:
+                    return None
+                payload = resp.json()
+        except Exception:
+            return None
+
+        presets = payload.get("presets") or []
+        if not isinstance(presets, list) or not presets:
+            return None
+
+        first = presets[0]
+        preset_id = first.get("id") if isinstance(first, dict) else None
+        if isinstance(preset_id, str) and preset_id:
+            _VOCAL_PRESET_CACHE[cache_key] = preset_id
+            return preset_id
+        return None
+
+    result: list[StudioPreset] = []
+    for preset in base_presets:
+        # If this is a vocal preset and doesn't already specify a
+        # vocal_preset_id, attempt to resolve one from the DSP.
+        if preset.target == "vocal" and preset.vocal_preset_id is None and preset.genre:
+            vp_id = await resolve_vocal_preset_id(preset)
+            if vp_id is not None:
+                preset = preset.copy(update={"vocal_preset_id": vp_id})
+        result.append(preset)
+
+    return result
 
 
 # -------------------------
