@@ -1967,6 +1967,107 @@ async def list_studio_presets(mode: Optional[PresetMode] = None) -> list[StudioP
             return preset_id
         return None
 
+    async def build_dynamic_vocal_presets_for_mode(requested_mode: Optional[PresetMode]) -> list[StudioPreset]:
+        """Dynamically expose all vocal tone presets as Studio presets.
+
+        For mixing flows, we call the DSP /vocal-presets catalog for the
+        corresponding flow_type (mixing_only | mixing_mastering) and map
+        each VocalPresetProfile into a StudioPreset so the studio UI can
+        show all 10+ per-genre "vibe" options.
+        """
+
+        if requested_mode not in {"mixing_only", "mix_and_master"}:
+            return []
+
+        if requested_mode == "mixing_only":
+            flow_type = "mixing_only"
+        else:
+            flow_type = "mixing_mastering"
+
+        url = f"{DSP_BASE_URL}/vocal-presets"
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(url, params={"flow": flow_type})
+                if resp.status_code != 200:
+                    return []
+                payload = resp.json()
+        except Exception:
+            return []
+
+        rows = payload.get("presets") or []
+        if not isinstance(rows, list):
+            return []
+
+        def _chain_for_genre(genre_key: str) -> str:
+            g = genre_key.lower()
+            if g == "dancehall":
+                return "dancehall"
+            if g == "trap_dancehall":
+                return "trap_dancehall"
+            if g in {"afrobeat", "afrobeats"}:
+                return "afrobeat"
+            if g in {"hiphop", "hip_hop"}:
+                return "hiphop"
+            if g == "rap":
+                return "aggressive_rap"
+            if g == "rnb":
+                return "rnb"
+            if g == "reggae":
+                return "reggae"
+            return "clean_vocal"
+
+        def _slug(text: str) -> str:
+            base = "".join(ch.lower() if ch.isalnum() else "-" for ch in text)
+            while "--" in base:
+                base = base.replace("--", "-")
+            return base.strip("-") or "preset"
+
+        dynamic: list[StudioPreset] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            vp_id = row.get("id")
+            genre_key = str(row.get("genre") or "any")
+            preset_name = str(row.get("preset_name") or "")
+            ui_subtitle = str(row.get("ui_subtitle") or "")
+            if not preset_name or not isinstance(vp_id, str):
+                continue
+
+            slug = _slug(preset_name)
+            preset_id = f"vocal-{flow_type}-{genre_key}-{slug}"
+
+            # High-level Studio preset name: keep the vocal preset name
+            # so the UI reflects the "vibe" label directly.
+            name = preset_name
+
+            chain_ref = _chain_for_genre(genre_key)
+
+            tags: list[str] = ["Vocal"]
+            if genre_key and genre_key != "any":
+                tags.append(genre_key.title())
+
+            dynamic.append(
+                StudioPreset(
+                    id=preset_id,
+                    name=name,
+                    mode=requested_mode or "mixing_only",
+                    target="vocal",
+                    genre=genre_key,
+                    description=ui_subtitle or "Genre-tuned vocal tone preset.",
+                    dsp_chain_reference=chain_ref,
+                    tags=tags,
+                    intent=ui_subtitle or None,
+                    inspired_style=None,
+                    target_genres=[genre_key] if genre_key and genre_key != "any" else [],
+                    flow="mix" if requested_mode == "mixing_only" else "mix_master",
+                    category="vocal",
+                    dsp_ranges=None,
+                    vocal_preset_id=vp_id,
+                )
+            )
+
+        return dynamic
+
     result: list[StudioPreset] = []
     for preset in base_presets:
         # If this is a vocal preset and doesn't already specify a
@@ -1976,6 +2077,12 @@ async def list_studio_presets(mode: Optional[PresetMode] = None) -> list[StudioP
             if vp_id is not None:
                 preset = preset.copy(update={"vocal_preset_id": vp_id})
         result.append(preset)
+
+    # For mixing flows, append dynamically generated vocal tone presets
+    # so the studio UI can show all 10 per-genre profiles.
+    dynamic_vocal = await build_dynamic_vocal_presets_for_mode(mode)
+    if dynamic_vocal:
+        result.extend(dynamic_vocal)
 
     return result
 
