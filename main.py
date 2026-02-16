@@ -17,6 +17,9 @@ from pydantic import BaseModel
 from processing.mixing_pipeline import ai_mix
 from processing.mastering_pipeline import ai_master
 from health import create_health_router
+from db import init_db
+from routes.upload import router as upload_router
+from routes.processing import router as processing_router
 from supabase_client import (
     create_processing_job,
     update_processing_job,
@@ -63,10 +66,18 @@ app.add_middleware(
 # Lightweight health + readiness endpoints for uptime monitoring
 health_router = create_health_router(service_name="backend", version="1.0.0")
 app.include_router(health_router)
+app.include_router(upload_router)
+app.include_router(processing_router)
 
 BASE_DIR = Path(__file__).resolve().parent
 SESSIONS_DIR = BASE_DIR / "sessions"
 SESSIONS_DIR.mkdir(exist_ok=True)
+
+
+@app.on_event("startup")
+def _startup_init_db() -> None:
+    # Initialize SQL schema for S3-based job processing endpoints.
+    init_db()
 
 
 async def wait_for_dsp(max_attempts: int = 6) -> None:
