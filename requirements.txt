@@ -5,3 +5,5 @@ httpx
 boto3
 sqlalchemy
 psycopg2-binary
+numpy
+soundfile
