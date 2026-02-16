@@ -2,7 +2,31 @@
 
 This worker is colocated inside the backend repo so you can deploy a single codebase.
 
-Run it as a separate process in the same deployment environment:
+## Single-process mode (API + worker together)
+
+Run both FastAPI and the DSP worker loop from one entrypoint:
+
+```bash
+python run_combined.py
+```
+
+This is the recommended path when you want one deployment target.
+
+## One-click deploy command mapping
+
+This repo now includes:
+
+- `backend/Procfile` with `web: python run_combined.py`
+- `backend/fly.toml` with:
+
+```toml
+[processes]
+	app = "python run_combined.py"
+```
+
+So the deploy process starts the combined API + worker runtime directly.
+
+## Worker-only mode (optional)
 
 ```bash
 python -m dsp_worker.worker
