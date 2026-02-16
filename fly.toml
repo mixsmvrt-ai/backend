@@ -1,0 +1,2 @@
+[processes]
+  app = "python run_combined.py"
