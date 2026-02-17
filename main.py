@@ -49,15 +49,25 @@ DSP_BASE_URL = _dsp_base.rstrip("/")
 # calls when multiple studio presets share the same flow/genre pair.
 _VOCAL_PRESET_CACHE: dict[tuple[str, str], str] = {}
 
-# Allow local Next.js dev and the deployed studio frontend
+# Allow local Next.js dev and deployed Studio frontends.
+#
+# You can override/extend with BACKEND_CORS_ORIGINS as a comma-separated list,
+# e.g. "https://mixsmvrt.vercel.app,https://my-preview.vercel.app".
+_default_cors_origins = [
+    "http://localhost:3000",
+    "http://localhost:3001",
+    "http://localhost:3002",
+    "https://mixsmvrt.vercel.app",
+]
+_env_cors = os.getenv("BACKEND_CORS_ORIGINS", "")
+_extra_cors_origins = [origin.strip() for origin in _env_cors.split(",") if origin.strip()]
+ALLOWED_CORS_ORIGINS = [*_default_cors_origins, *_extra_cors_origins]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://localhost:3001",
-        "http://localhost:3002",
-        "https://mixsmvrt.vercel.app",
-    ],
+    allow_origins=ALLOWED_CORS_ORIGINS,
+    # Support Vercel preview deployments (e.g. https://<hash>-mixsmvrt.vercel.app)
+    allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
