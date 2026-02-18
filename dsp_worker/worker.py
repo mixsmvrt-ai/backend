@@ -13,7 +13,11 @@ from .s3_client import download_from_presigned_url, get_output_s3_key, upload_fi
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("mixsmvrt_dsp_worker")
 
-BACKEND_API_URL = os.getenv("BACKEND_API_URL", "http://localhost:8000").rstrip("/")
+_default_local_port = os.getenv("PORT", "8080")
+BACKEND_API_URL = os.getenv(
+    "BACKEND_API_URL",
+    f"http://127.0.0.1:{_default_local_port}",
+).rstrip("/")
 WORKER_AUTH_TOKEN = os.getenv("WORKER_AUTH_TOKEN")
 POLL_SECONDS = float(os.getenv("WORKER_POLL_SECONDS", "5"))
 MAX_RETRIES = int(os.getenv("WORKER_MAX_RETRIES", "3"))
