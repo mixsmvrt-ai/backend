@@ -11,7 +11,9 @@ logger = logging.getLogger("riddimbase_combined")
 
 def _build_uvicorn_server() -> uvicorn.Server:
     host = os.getenv("HOST", "0.0.0.0")
-    port = int(os.getenv("PORT", "8000"))
+    # Fly defaults to internal_port 8080 unless configured otherwise.
+    # Use PORT when provided, else fall back to 8080 for safe deployment.
+    port = int(os.getenv("PORT", "8080"))
     log_level = os.getenv("LOG_LEVEL", "info")
 
     config = uvicorn.Config(
@@ -22,6 +24,7 @@ def _build_uvicorn_server() -> uvicorn.Server:
         reload=False,
         workers=1,
     )
+    logger.info("Starting combined runtime on %s:%s", host, port)
     return uvicorn.Server(config)
 
 
