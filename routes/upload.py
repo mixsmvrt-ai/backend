@@ -1,3 +1,5 @@
+import logging
+
 from pydantic import BaseModel, Field
 from fastapi import APIRouter, HTTPException
 
@@ -8,6 +10,7 @@ from s3 import (
 )
 
 router = APIRouter(tags=["upload"])
+logger = logging.getLogger("riddimbase_backend.upload")
 
 
 class GenerateUploadUrlRequest(BaseModel):
@@ -32,5 +35,38 @@ def generate_upload_url(payload: GenerateUploadUrlRequest) -> GenerateUploadUrlR
         )
 
     s3_key = get_s3_key_for_user(payload.user_id, payload.filename)
-    upload_url = generate_presigned_upload_url(s3_key, payload.content_type)
-    return GenerateUploadUrlResponse(upload_url=upload_url, s3_key=s3_key)
+
+    try:
+        upload_url = generate_presigned_upload_url(s3_key, payload.content_type)
+        return GenerateUploadUrlResponse(upload_url=upload_url, s3_key=s3_key)
+    except RuntimeError as exc:
+        # e.g. Missing S3_BUCKET_NAME
+        logger.exception("Runtime configuration error while generating presigned upload URL")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "S3_CONFIG_ERROR",
+                "message": str(exc),
+            },
+        ) from exc
+    except Exception as exc:  # pragma: no cover - defensive
+        msg = str(exc) or "Unknown error"
+        lower = msg.lower()
+        if "credential" in lower or "access key" in lower or "secret" in lower:
+            code = "AWS_CREDENTIALS_MISSING"
+            status = 500
+        elif "signature" in lower or "token" in lower or "expired" in lower:
+            code = "S3_PRESIGN_FAILED"
+            status = 502
+        else:
+            code = "UPLOAD_URL_GENERATION_FAILED"
+            status = 500
+
+        logger.exception("Error while generating presigned upload URL")
+        raise HTTPException(
+            status_code=status,
+            detail={
+                "error": code,
+                "message": msg,
+            },
+        ) from exc
