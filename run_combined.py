@@ -4,8 +4,6 @@ import os
 
 import uvicorn
 
-from dsp_worker.worker import run_worker_loop
-
 logger = logging.getLogger("riddimbase_combined")
 
 
@@ -38,11 +36,35 @@ async def run_backend_and_worker() -> None:
     """
 
     server = _build_uvicorn_server()
-    worker_task = asyncio.create_task(run_worker_loop(), name="dsp-worker-loop")
     server_task = asyncio.create_task(server.serve(), name="uvicorn-server")
 
+    worker_task: asyncio.Task | None = None
+    enable_worker = os.getenv("ENABLE_DSP_WORKER", "true").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+    if enable_worker:
+        try:
+            # Import lazily so API can still start listening even if worker
+            # dependencies are missing or misconfigured.
+            from dsp_worker.worker import run_worker_loop
+
+            worker_task = asyncio.create_task(run_worker_loop(), name="dsp-worker-loop")
+            logger.info("DSP worker loop started")
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.exception("Failed to start DSP worker loop: %s", exc)
+    else:
+        logger.info("DSP worker loop disabled by ENABLE_DSP_WORKER")
+
+    wait_set = {server_task}
+    if worker_task is not None:
+        wait_set.add(worker_task)
+
     done, pending = await asyncio.wait(
-        {worker_task, server_task},
+        wait_set,
         return_when=asyncio.FIRST_COMPLETED,
     )
 
