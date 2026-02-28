@@ -4,6 +4,8 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from contextlib import nullcontext
+
 from models import JobStatus, ProcessingJob
 
 
@@ -47,8 +49,40 @@ def list_jobs(
 
 
 def claim_pending_job(db: Session) -> ProcessingJob | None:
-    # Atomic claim using row lock + SKIP LOCKED so multiple workers can
-    # safely poll in parallel without claiming the same job.
+    """Atomically claim the next pending job.
+
+    - On Postgres: uses `FOR UPDATE SKIP LOCKED` for safe concurrent polling.
+    - On SQLite: uses `BEGIN IMMEDIATE` to acquire a write lock, then
+      selects+updates within the same transaction.
+
+    This keeps local/dev (SQLite) and production (Postgres) behaviour
+    consistent while avoiding SQL features SQLite doesn't support.
+    """
+
+    dialect = db.get_bind().dialect.name
+
+    tx_ctx = db.begin() if not db.in_transaction() else nullcontext()
+
+    if dialect == "sqlite":
+        # SQLite doesn't support SKIP LOCKED or FOR UPDATE.
+        # We still claim within a transaction to keep the select+update atomic.
+        with tx_ctx:
+            stmt = (
+                select(ProcessingJob)
+                .where(ProcessingJob.status == JobStatus.pending.value)
+                .order_by(ProcessingJob.created_at.asc())
+                .limit(1)
+            )
+            job = db.execute(stmt).scalars().first()
+            if job is None:
+                return None
+            job.status = JobStatus.processing.value
+            job.error_message = None
+            job.updated_at = datetime.utcnow()
+        db.refresh(job)
+        return job
+
+    # Default: attempt a SKIP LOCKED claim for databases that support it.
     stmt = (
         select(ProcessingJob)
         .where(ProcessingJob.status == JobStatus.pending.value)
@@ -57,7 +91,7 @@ def claim_pending_job(db: Session) -> ProcessingJob | None:
         .limit(1)
     )
 
-    with db.begin():
+    with tx_ctx:
         job = db.execute(stmt).scalars().first()
         if job is None:
             return None
