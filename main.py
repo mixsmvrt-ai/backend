@@ -20,6 +20,7 @@ from health import create_health_router
 from db import init_db
 from routes.upload import router as upload_router
 from routes.processing import router as processing_router
+from routes.analyze_mix import router as analyze_mix_router
 from supabase_client import (
     create_processing_job,
     update_processing_job,
@@ -78,6 +79,7 @@ health_router = create_health_router(service_name="backend", version="1.0.0")
 app.include_router(health_router)
 app.include_router(upload_router)
 app.include_router(processing_router)
+app.include_router(analyze_mix_router)
 
 BASE_DIR = Path(__file__).resolve().parent
 SESSIONS_DIR = BASE_DIR / "sessions"
