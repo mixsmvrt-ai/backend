@@ -68,6 +68,7 @@ class AnalyzeTrackResponse(BaseModel):
     gain_adjustment_db: float
     stereo_width: float
     eq_dip: dict[str, float] | None = None
+    decision_summary: str | None = None
     plugins: list[dict[str, Any]]
 
 
@@ -125,6 +126,42 @@ def _maybe_build_sidechain(track_rows: list[dict[str, Any]]) -> list[SidechainRe
             reduction_db=1.5,
         )
     ]
+
+
+def _build_decision_summary(
+    row: dict[str, Any],
+    sidechain: SidechainResponse | None = None,
+) -> str:
+    role = str(row.get("role") or "track").replace("_", " ")
+    features = row.get("features") or {}
+    lufs = float(features.get("lufs", -18.0))
+    stereo_width = float(row.get("stereo_width", 1.0))
+    gain_adjustment_db = float(row.get("gain_adjustment_db", 0.0))
+
+    parts = [f"Detected {role} at {lufs:.1f} LUFS"]
+
+    if abs(gain_adjustment_db) >= 0.25:
+        move = "lifted" if gain_adjustment_db > 0 else "trimmed"
+        parts.append(f"{move} by {abs(gain_adjustment_db):.1f} dB for gain staging")
+
+    if stereo_width < 0.85:
+        parts.append("kept the image focused and narrow")
+    elif stereo_width > 1.15:
+        parts.append("left space for a wider stereo spread")
+
+    eq_dip = row.get("eq_dip")
+    if isinstance(eq_dip, dict):
+        freq = float(eq_dip.get("freq", 3000.0))
+        gain = float(eq_dip.get("gain", -3.0))
+        parts.append(f"cut {abs(gain):.1f} dB around {freq:.0f} Hz to create vocal space")
+
+    if sidechain is not None:
+        parts.append(
+            f"added ducking from {sidechain.source} into {sidechain.target} "
+            f"at {sidechain.ratio:.1f}:1"
+        )
+
+    return ". ".join(parts) + "."
 
 
 async def _download_track_to_temp(url: str, file_suffix: str = ".wav") -> Path:
@@ -185,6 +222,7 @@ async def analyze_mix(payload: AnalyzeMixRequest) -> AnalyzeMixResponse:
                         "gain_adjustment_db": float(gain_info["gain_adjustment_db"]),
                         "stereo_width": float(features.get("stereo_width", 1.0)),
                         "eq_dip": eq_dip,
+                        "decision_summary": None,
                         "plugins": plugin_chain,
                     }
                 )
@@ -208,6 +246,15 @@ async def analyze_mix(payload: AnalyzeMixRequest) -> AnalyzeMixResponse:
 
         analyzed_tracks = [AnalyzeTrackResponse(**row) for row in analyzed_track_rows]
         sidechains = _maybe_build_sidechain(analyzed_track_rows)
+        sidechain_by_target = {sidechain.target: sidechain for sidechain in sidechains}
+
+        for row in analyzed_track_rows:
+            row["decision_summary"] = _build_decision_summary(
+                row,
+                sidechain_by_target.get(str(row["track_id"])),
+            )
+
+        analyzed_tracks = [AnalyzeTrackResponse(**row) for row in analyzed_track_rows]
 
         return AnalyzeMixResponse(
             tracks=analyzed_tracks,
