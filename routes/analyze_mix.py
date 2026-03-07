@@ -4,15 +4,20 @@ import asyncio
 import os
 import tempfile
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from s3 import generate_presigned_download_url
-from services.audio_analysis import analyze_audio
-from services.mix_predictor import predict_plugin_chain
+from services.mix_engine import (
+    calculate_gain_adjustment,
+    create_vocal_space,
+    detect_track_role,
+    extract_audio_features,
+    predict_plugin_chain,
+)
 
 
 router = APIRouter(prefix="", tags=["analysis"])
@@ -40,7 +45,7 @@ _analysis_waiting_jobs = 0
 
 class AnalyzeTrackRequest(BaseModel):
     track_id: str = Field(min_length=1, max_length=128)
-    role: str = Field(min_length=1, max_length=64)
+    role: str | None = Field(default=None, max_length=64)
     s3_url: str | None = Field(default=None, max_length=4096)
     s3_key: str | None = Field(default=None, max_length=2048)
 
@@ -60,12 +65,25 @@ class AnalyzeTrackResponse(BaseModel):
     track_id: str
     role: str
     features: dict[str, float]
+    gain_adjustment_db: float
+    stereo_width: float
+    eq_dip: dict[str, float] | None = None
     plugins: list[dict[str, Any]]
+
+
+class SidechainResponse(BaseModel):
+    source: str
+    target: str
+    ratio: float
+    attack: float
+    release: float
+    reduction_db: float
 
 
 class AnalyzeMixResponse(BaseModel):
     tracks: list[AnalyzeTrackResponse]
     queue: QueueStatus
+    sidechains: list[SidechainResponse]
 
 
 def _resolve_track_url(track: AnalyzeTrackRequest) -> str:
@@ -89,6 +107,24 @@ def _normalize_role(role: str) -> str:
     if key == "adlib":
         return "background_vocal"
     return key
+
+
+def _maybe_build_sidechain(track_rows: list[dict[str, Any]]) -> list[SidechainResponse]:
+    lead = next((row for row in track_rows if row["role"] == "lead_vocal"), None)
+    beat = next((row for row in track_rows if row["role"] == "beat"), None)
+    if lead is None or beat is None:
+        return []
+
+    return [
+        SidechainResponse(
+            source=str(lead["track_id"]),
+            target=str(beat["track_id"]),
+            ratio=2.0,
+            attack=10.0,
+            release=120.0,
+            reduction_db=1.5,
+        )
+    ]
 
 
 async def _download_track_to_temp(url: str, file_suffix: str = ".wav") -> Path:
@@ -119,28 +155,38 @@ async def analyze_mix(payload: AnalyzeMixRequest) -> AnalyzeMixResponse:
         _analysis_active_jobs += 1
 
     try:
-        analyzed_tracks: list[AnalyzeTrackResponse] = []
+        analyzed_track_rows: list[dict[str, Any]] = []
+        lead_vocal_features: dict[str, float] | None = None
 
         for track in payload.tracks:
-            resolved_role = _normalize_role(track.role)
+            resolved_role = _normalize_role(track.role) if track.role else None
             source_url = _resolve_track_url(track)
             temp_path: Path | None = None
             try:
                 temp_path = await _download_track_to_temp(source_url)
-                features = analyze_audio(temp_path)
-                prediction = predict_plugin_chain(
-                    features=features,
-                    track_role=resolved_role,
+                features = extract_audio_features(temp_path)
+                detected_role = resolved_role or detect_track_role(features)
+                gain_info = calculate_gain_adjustment(detected_role, float(features.get("lufs", -18.0)))
+                plugin_chain = predict_plugin_chain(
+                    role=detected_role,
                     genre=payload.genre,
                     preset=payload.preset,
                 )
-                analyzed_tracks.append(
-                    AnalyzeTrackResponse(
-                        track_id=track.track_id,
-                        role=resolved_role,
-                        features=features,
-                        plugins=prediction.get("plugin_chain", []),
-                    )
+                eq_dip: dict[str, float] | None = None
+
+                if detected_role == "lead_vocal":
+                    lead_vocal_features = features
+
+                analyzed_track_rows.append(
+                    {
+                        "track_id": track.track_id,
+                        "role": detected_role,
+                        "features": features,
+                        "gain_adjustment_db": float(gain_info["gain_adjustment_db"]),
+                        "stereo_width": float(features.get("stereo_width", 1.0)),
+                        "eq_dip": eq_dip,
+                        "plugins": plugin_chain,
+                    }
                 )
             finally:
                 if temp_path is not None:
@@ -149,9 +195,24 @@ async def analyze_mix(payload: AnalyzeMixRequest) -> AnalyzeMixResponse:
                     except Exception:
                         pass
 
+        if lead_vocal_features is not None:
+            vocal_space = create_vocal_space(lead_vocal_features)
+            eq_dip = vocal_space.get("eq_dip")
+            for row in analyzed_track_rows:
+                if row["role"] == "beat":
+                    row["eq_dip"] = eq_dip
+                    row_plugins = list(row["plugins"])
+                    if eq_dip is not None:
+                        row_plugins.insert(0, {"plugin": "eq", "params": {"vocal_space_dip": eq_dip}})
+                    row["plugins"] = row_plugins
+
+        analyzed_tracks = [AnalyzeTrackResponse(**row) for row in analyzed_track_rows]
+        sidechains = _maybe_build_sidechain(analyzed_track_rows)
+
         return AnalyzeMixResponse(
             tracks=analyzed_tracks,
             queue=QueueStatus(position=position, estimated_wait=estimated_wait_sec),
+            sidechains=sidechains,
         )
     finally:
         async with _analysis_queue_lock:
